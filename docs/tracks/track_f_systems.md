@@ -11,16 +11,30 @@ The experiment infrastructure must be trustworthy before any experimental result
 - **E02**: Baseline 8xH100 reproduction
 
 ## Key Principles
-- No experiment is trustworthy until E02 passes (within 0.003 bpb of baseline)
+- No model conclusion is trustworthy until E02 passes (within 0.003 bpb of baseline); E00 and E01 exist only to validate the harness
 - Every run must emit tok_s, train_tokens_seen, prequant exact, and qgap
 - Config-driven paths — no hardcoded SP-1024 assumptions
 - Budget discipline: phase caps, conservative plan (~12-15 H100-hours)
 - All new experiment knobs as env vars (auto-discovered by config_utils)
 
 ## Status
-In progress. Infrastructure built (launch.py, watchdog, preflight, etc.). Prerequisites P-01..P-06 not yet started.
+Trusted for launch/measurement on the training path, but not yet trusted for saved-artifact replay. `P-01`, `P-02`, `P-03`, `P-04`, `P-05`, `P-06`, `X-01`, `X-02`, `E00`, `E01`, and `E02` are done. The next work in sequence is now a focused trainer serialization bughunt, because fresh 1xH100 replays still do not reproduce the saved checkpoints from `E01` or `E02`.
 
 ## Learnings
 - MLX lazy eval bug fixed (mx.synchronize → mx.eval)
-- 33 infra tests passing
-- Codex + Gemini reviews completed, issues fixed
+- 50 infra tests passing
+- Codex + Gemini review hardened the replay utility, but a deeper trainer-side serialization bug remains
+- `E00` succeeded on `proxy_p0_smoke-20260319-082117-62aaaea6` with post-roundtrip `val_bpb=2.59277612`, `qgap_bpb=0.00857417`, and `artifact_slack_bytes=9,350,400`
+- The first live `1xH100` run caught a launcher bug: `launch.py run` was defaulting to `8` GPUs instead of the machine's configured GPU count
+- Triton requires a tiny compile toolchain on remote hosts; preflight now verifies `Python.h` and `gcc` before launch
+- Watchdog stall detection must respect log cadence (`TRAIN_LOG_EVERY`), not raw per-step time, or it will kill healthy runs during final eval
+- `compare.py` and `launch.py status` now surface postquant/prequant metrics, `qgap`, artifact slack, step time, and throughput directly
+- `E01` passed after stabilizing the Vast host on `Python 3.11.15`; the successful seed pair landed at postquant `val_bpb` 1.38651817 and 1.38373201, for a spread of 0.00278616
+- `E01` establishes the first trusted P1 control band: mean postquant `val_bpb=1.38512509`, mean `qgap_bpb=0.00249501`, mean step time `≈336.8 ms`, and throughput `≈1.56M tok/s`
+- Fresh `8xH100` bring-up exposed a remote-interpreter mismatch: the harness was checking bare `python3` while the host setup used a shared repo `.venv`; preflight, dependency checks, auto-downloads, and launches now all prefer that shared `.venv/bin/python`
+- Fresh `8xH100` bring-up also exposed a data footgun: `cached_challenge_fineweb.py` was defaulting to `80` train shards, which is fine for proxies but unsafe for baseline reproduction; it now defaults to the full published train split and uses `--train-shards` only for explicit proxy prefixes
+- `E02` passed on `baseline_repro-20260319-093041-82dade88` with exact post-roundtrip `val_bpb=1.22628807`, prequant `val_bpb=1.21919389`, `qgap_bpb=0.00709417`, `total_submission_bytes=15,861,240`, and `artifact_slack_bytes=138,760`
+- The `E02` runtime profile matches the published baseline closely enough to trust future deltas: `step_avg_ms=43.55`, `tok_s=12.04M`, and the exact post-roundtrip gap vs the published `1.22436570` is only `+0.00192237`
+- `export_eval.py` now prefers the checkpoint's neighboring manifest env and trainer snapshot, scrubs ambient trainer env vars before import, and writes `final_model.export_eval.int8.ptz` by default so replay debugging does not overwrite a trusted artifact
+- Fresh 1xH100 replay checks proved the remaining bug is deeper than exporter config drift: the saved `E02` raw checkpoint replayed at `prequant_val_bpb=1.81346210` / `postquant_val_bpb=1.82621440`, and the saved `E01` raw checkpoint replayed at `1.79180195` / `1.79691088`
+- Because those diagnostics used the saved run manifest, saved trainer snapshot, and default exporter settings, the next systems tranche should target trainer-side artifact serialization or live-vs-saved model divergence before any Track B sweep resumes
