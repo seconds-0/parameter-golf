@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import random
 import re
+import shlex
 import subprocess
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,10 @@ SCRIPTS_DIR = EXPERIMENTS_DIR / "scripts"
 MACHINES_FILE = EXPERIMENTS_DIR / "machines.yaml"
 TRAINER_PATH = REPO_DIR / "train_gpt.py"
 TRAINER_MLX_PATH = REPO_DIR / "train_gpt_mlx.py"
+DEFAULT_DATASET_RELATIVE = Path("data/datasets/fineweb10B_sp1024")
+DEFAULT_TOKENIZER_RELATIVE = Path("data/tokenizers/fineweb_1024_bpe.model")
+DEFAULT_DATASET_VARIANT = "sp1024"
+EXTRA_ENV_ALLOWLIST = {"DATASET_VARIANT"}
 ENV_NAME_RE = re.compile(r'os\.environ\.get\("([A-Z0-9_]+)"')
 POSITIVE_INT_KEYS = {
     "ITERATIONS", "MLP_MULT", "MODEL_DIM", "MUON_BACKEND_STEPS", "NUM_HEADS",
@@ -76,6 +81,26 @@ def resolve_path(path_str: str, base_dir: Path | None = None) -> Path:
     if candidate.exists():
         return candidate
     return (Path.cwd() / path).resolve()
+
+
+def default_data_path(root_dir: str | Path) -> str:
+    return str(Path(root_dir) / DEFAULT_DATASET_RELATIVE)
+
+
+def default_tokenizer_path(root_dir: str | Path) -> str:
+    return str(Path(root_dir) / DEFAULT_TOKENIZER_RELATIVE)
+
+
+def with_default_paths(env: dict[str, str], root_dir: str | Path) -> dict[str, str]:
+    resolved = dict(env)
+    resolved.setdefault("DATA_PATH", default_data_path(root_dir))
+    resolved.setdefault("TOKENIZER_PATH", default_tokenizer_path(root_dir))
+    return resolved
+
+
+def remote_python_command(root_dir: str | Path, args: str) -> str:
+    python_bin = shlex.quote(str(Path(root_dir) / ".venv" / "bin" / "python"))
+    return f'PYTHON_BIN={python_bin}; if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi; "$PYTHON_BIN" {args}'
 
 
 def sha256_file(path: Path) -> str:
@@ -148,6 +173,7 @@ def extract_allowlist() -> set[str]:
     for trainer_path in (TRAINER_PATH, TRAINER_MLX_PATH):
         if trainer_path.exists():
             names.update(ENV_NAME_RE.findall(trainer_path.read_text(encoding="utf-8")))
+    names.update(EXTRA_ENV_ALLOWLIST)
     return names
 
 

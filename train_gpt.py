@@ -306,10 +306,10 @@ INT8_KEEP_FLOAT_FP32_NAME_PATTERNS = tuple(
     ).split(",")
     if pattern
 )
-INT8_KEEP_FLOAT_MAX_NUMEL = 65_536
+INT8_KEEP_FLOAT_MAX_NUMEL = int(os.environ.get("INT8_KEEP_FLOAT_MAX_NUMEL", 65_536))
 INT8_KEEP_FLOAT_STORE_DTYPE = torch.float16
 INT8_PER_ROW_SCALE_DTYPE = torch.float16
-INT8_CLIP_PERCENTILE = 99.99984
+INT8_CLIP_PERCENTILE = float(os.environ.get("INT8_CLIP_PERCENTILE", 99.99984))
 INT8_CLIP_Q = INT8_CLIP_PERCENTILE / 100.0
 
 def tensor_nbytes(t: Tensor) -> int:
@@ -1052,12 +1052,23 @@ def main() -> None:
             and (step <= 10 or step % args.train_log_every == 0 or stop_after_step is not None)
         )
         if should_log_train:
+            train_tokens_seen = step * args.train_batch_tokens
+            tok_s = train_tokens_seen / max(approx_training_time_ms / 1000.0, 1e-9)
             log0(
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
-                f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
+                f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms "
+                f"tok_s:{tok_s:.2f} train_tokens_seen:{train_tokens_seen}"
             )
             if _WANDB_PROJECT and master_process:
-                wandb.log({"train_loss": train_loss.item(), "step_avg_ms": approx_training_time_ms / step}, step=step)
+                wandb.log(
+                    {
+                        "train_loss": train_loss.item(),
+                        "step_avg_ms": approx_training_time_ms / step,
+                        "tok_s": tok_s,
+                        "train_tokens_seen": train_tokens_seen,
+                    },
+                    step=step,
+                )
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
@@ -1072,12 +1083,33 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
+    train_tokens_seen = step * args.train_batch_tokens
 
     # -----------------------------
     # SERIALIZATION + ROUNDTRIP VALIDATION
     # -----------------------------
     # Save the raw state (useful for debugging/loading in PyTorch directly), then always produce
     # the compressed int8+zlib artifact and validate the round-tripped weights.
+
+    torch.cuda.synchronize()
+    t_pre_eval = time.perf_counter()
+    pre_val_loss, pre_val_bpb = eval_val(
+        args,
+        model,
+        rank,
+        world_size,
+        device,
+        grad_accum_steps,
+        val_tokens,
+        base_bytes_lut,
+        has_leading_space_lut,
+        is_boundary_token_lut,
+    )
+    torch.cuda.synchronize()
+    log0(
+        f"final_prequant_exact val_loss:{pre_val_loss:.8f} val_bpb:{pre_val_bpb:.8f} "
+        f"train_tokens_seen:{train_tokens_seen} eval_time:{1000.0 * (time.perf_counter() - t_pre_eval):.0f}ms"
+    )
 
     if master_process:
         torch.save(base_model.state_dict(), "final_model.pt")
@@ -1131,11 +1163,25 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+    log0(
+        f"quantization_delta_exact val_loss:{q_val_loss - pre_val_loss:.8f} "
+        f"val_bpb:{q_val_bpb - pre_val_bpb:.8f} train_tokens_seen:{train_tokens_seen}"
+    )
 
     if _WANDB_PROJECT and master_process:
-        wandb.log({"final_val_loss": q_val_loss, "final_val_bpb": q_val_bpb,
-                    "model_bytes_int8_zlib": quant_file_bytes,
-                    "total_submission_bytes": quant_file_bytes + code_bytes})
+        wandb.log(
+            {
+                "prequant_val_loss": pre_val_loss,
+                "prequant_val_bpb": pre_val_bpb,
+                "final_val_loss": q_val_loss,
+                "final_val_bpb": q_val_bpb,
+                "qgap_loss": q_val_loss - pre_val_loss,
+                "qgap_bpb": q_val_bpb - pre_val_bpb,
+                "train_tokens_seen": train_tokens_seen,
+                "model_bytes_int8_zlib": quant_file_bytes,
+                "total_submission_bytes": quant_file_bytes + code_bytes,
+            }
+        )
         wandb.finish()
 
     if distributed:

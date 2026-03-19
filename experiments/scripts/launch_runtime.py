@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from config_utils import (
+    DEFAULT_DATASET_VARIANT,
     MACHINES_FILE,
     REPO_DIR,
     RESULTS_DIR,
@@ -21,9 +22,11 @@ from config_utils import (
     TRAINER_PATH,
     git_sha,
     now_iso,
+    remote_python_command,
     resolve_machine,
     sha256_file,
     unique_run_id,
+    with_default_paths,
 )
 
 
@@ -83,7 +86,7 @@ def build_manifest(
     env: dict[str, str],
     label: str,
     host_arg: str,
-    gpus: int,
+    gpus: int | None,
     remote_dir: str | None,
     *,
     run_id: str | None = None,
@@ -98,15 +101,16 @@ def build_manifest(
     shared_dir = remote_dir or str(machine.get("remote_dir") or "")
     if not shared_dir:
         raise RuntimeError(f"Machine {machine_name} is missing remote_dir in {MACHINES_FILE}")
+    resolved_gpus = gpus if gpus is not None else int(machine.get("gpus") or 0)
+    if resolved_gpus <= 0:
+        raise RuntimeError(f"Machine {machine_name} must define a positive GPU count to launch runs")
     current_run_id = run_id or unique_run_id(label)
     remote_root = f"/tmp/pgolf_{current_run_id}"
     metadata = dict(metadata or {})
-    forwarded_env = {
-        **env,
-        "RUN_ID": current_run_id,
-        "DATA_PATH": f"{shared_dir}/data/datasets/fineweb10B_sp1024",
-        "TOKENIZER_PATH": f"{shared_dir}/data/tokenizers/fineweb_1024_bpe.model",
-    }
+    explicit_runtime_paths = "DATA_PATH" in env or "TOKENIZER_PATH" in env
+    forwarded_env = with_default_paths({**env, "RUN_ID": current_run_id}, shared_dir)
+    if not explicit_runtime_paths:
+        forwarded_env.setdefault("DATASET_VARIANT", DEFAULT_DATASET_VARIANT)
     if metadata.get("group"):
         forwarded_env["PGOLF_WANDB_GROUP"] = metadata["group"]
     if metadata.get("notes"):
@@ -129,7 +133,7 @@ def build_manifest(
         "git_sha": git_sha(),
         "host": host,
         "host_name": machine_name,
-        "gpus": gpus,
+        "gpus": resolved_gpus,
         "machine_gpus": machine.get("gpus"),
         "machine_remote_dir": shared_dir,
         "start_time": now_iso(),
@@ -184,16 +188,23 @@ def sync_repo(manifest: dict[str, Any]) -> None:
 
 
 def ensure_remote_data(manifest: dict[str, Any]) -> None:
-    shared = manifest["resolved_env"]["DATA_PATH"].split("/data/datasets/", 1)[0]
+    data_path = str(manifest["resolved_env"]["DATA_PATH"])
+    tokenizer_path = str(manifest["resolved_env"]["TOKENIZER_PATH"])
+    presence_check = f"test -f {q(tokenizer_path)} && test -d {q(data_path)}"
+    if ssh(manifest["host"], presence_check, check=False).returncode == 0:
+        return
+    variant = manifest["resolved_env"].get("DATASET_VARIANT")
+    if not variant:
+        raise RuntimeError(
+            "Missing dataset/tokenizer and no DATASET_VARIANT was provided for auto-download: "
+            f"DATA_PATH={data_path!r} TOKENIZER_PATH={tokenizer_path!r}"
+        )
+    shared = str(manifest["machine_remote_dir"])
     ssh(
         manifest["host"],
         " ".join(
             [
-                f"test -f {q(manifest['resolved_env']['TOKENIZER_PATH'])}",
-                "&&",
-                f"test -d {q(manifest['resolved_env']['DATA_PATH'])}",
-                "||",
-                f"(cd {q(shared)} && flock -x /tmp/pgolf_data.lock python3 data/cached_challenge_fineweb.py --variant sp1024)",
+                f"(cd {q(shared)} && flock -x /tmp/pgolf_data.lock {remote_python_command(shared, f'data/cached_challenge_fineweb.py --variant {q(variant)}')})",
             ]
         ),
     )
@@ -201,11 +212,17 @@ def ensure_remote_data(manifest: dict[str, Any]) -> None:
 
 def maybe_install_wandb(manifest: dict[str, Any]) -> None:
     if "WANDB_PROJECT" in manifest["_forwarded_env"]:
-        ssh(manifest["host"], "python3 -m pip install wandb -q >/dev/null 2>&1 || true", check=False)
+        shared = str(manifest["machine_remote_dir"])
+        ssh(manifest["host"], f"({remote_python_command(shared, '-m pip install wandb -q >/dev/null 2>&1')}) || true", check=False)
 
 
 def verify_remote_dependencies(manifest: dict[str, Any]) -> None:
-    ssh(manifest["host"], f"cd {q(manifest['remote_repo_dir'])} && python3 -c {q('import torch; import sentencepiece; import numpy')}")
+    shared = str(manifest["machine_remote_dir"])
+    import_cmd = f"-c {q('import torch; import sentencepiece; import numpy')}"
+    ssh(
+        manifest["host"],
+        f"cd {q(manifest['remote_repo_dir'])} && {remote_python_command(shared, import_cmd)}",
+    )
 
 
 def _env_heredoc_delimiter(run_id: str) -> str:
@@ -217,6 +234,10 @@ def start_remote_run(manifest: dict[str, Any]) -> None:
         f"export {key}={q(value)}" for key, value in sorted(manifest["_forwarded_env"].items())
     )
     delimiter = _env_heredoc_delimiter(manifest["run_id"])
+    distributed_run = remote_python_command(
+        str(manifest["machine_remote_dir"]),
+        f"-m torch.distributed.run --standalone --nproc_per_node={manifest['gpus']} train_gpt.py",
+    )
     wrapper = "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -226,7 +247,7 @@ def start_remote_run(manifest: dict[str, Any]) -> None:
             export_lines,
             f"export PYTHONPATH={q(str(Path(manifest['remote_repo_dir']) / 'experiments/scripts'))}${{PYTHONPATH:+:$PYTHONPATH}}",
             f"echo $$ > {q(manifest['remote_pid_path'])}",
-            f"python3 -m torch.distributed.run --standalone --nproc_per_node={manifest['gpus']} train_gpt.py > {q(manifest['remote_stdout_path'])} 2>&1",
+            f"{distributed_run} > {q(manifest['remote_stdout_path'])} 2>&1",
             "status=$?",
             f'printf "%s\\n" "$status" > {q(manifest["remote_exit_code_path"])}',
             'exit "$status"',
@@ -540,7 +561,11 @@ def launch_single(
         if not skip_preflight:
             import preflight
 
-            preflight_result = preflight.run_preflight_target(manifest["host_name"], print_output=False)
+            preflight_result = preflight.run_preflight_target(
+                manifest["host_name"],
+                config_env=manifest["resolved_env"],
+                print_output=False,
+            )
             if not preflight_result["ok"]:
                 raise RuntimeError(preflight_result["summary"])
         sync_repo(manifest)

@@ -33,8 +33,15 @@ from launch_runtime import (
     wait_for_run,
 )
 
-TRAIN_RE = re.compile(r"step:(?P<step>\d+)/\d+\s+train_loss:(?P<loss>[-+.\deEinfnaINFNA]+)")
-VAL_RE = re.compile(r"step:(?P<step>\d+)/\d+\s+val_loss:[-+.\deE]+\s+val_bpb:(?P<val_bpb>[-+.\deE]+)")
+TRAIN_RE = re.compile(
+    r"step:(?P<step>\d+)/\d+\s+train_loss:(?P<loss>[-+.\deEinfnaINFNA]+)\s+"
+    r"train_time:[-+.\deE]+ms\s+step_avg:(?P<step_avg_ms>[-+.\deE]+)ms"
+    r"(?:\s+tok_s:(?P<tok_s>[-+.\deE]+))?"
+)
+VAL_RE = re.compile(
+    r"step:(?P<step>\d+)/\d+\s+val_loss:[-+.\deE]+\s+val_bpb:(?P<val_bpb>[-+.\deE]+)\s+"
+    r"train_time:[-+.\deE]+ms\s+step_avg:(?P<step_avg_ms>[-+.\deE]+)ms"
+)
 
 
 def _load_local_module(name: str, filename: str):
@@ -98,23 +105,46 @@ def human_duration(seconds: float | None) -> str:
     return f"{secs}s"
 
 
+def compact_number(value: float | int | None, *, precision: int = 2) -> str:
+    if value is None:
+        return ""
+    number = float(value)
+    suffix = ""
+    if abs(number) >= 1_000_000:
+        number /= 1_000_000
+        suffix = "M"
+    elif abs(number) >= 1_000:
+        number /= 1_000
+        suffix = "K"
+    return f"{number:.{precision}f}{suffix}"
+
+
 def extract_progress(lines: list[str]) -> dict[str, Any]:
     latest_step: int | None = None
     latest_train_loss: float | None = None
     latest_val_bpb: float | None = None
+    latest_step_avg_ms: float | None = None
+    latest_tok_s: float | None = None
     for line in lines:
         train_match = TRAIN_RE.search(line)
         if train_match:
             latest_step = int(train_match.group("step"))
             latest_train_loss = _parse_float(train_match.group("loss"))
+            latest_step_avg_ms = _parse_float(train_match.group("step_avg_ms"))
+            tok_s = train_match.group("tok_s")
+            if tok_s is not None:
+                latest_tok_s = _parse_float(tok_s)
         val_match = VAL_RE.search(line)
         if val_match:
             latest_step = int(val_match.group("step"))
             latest_val_bpb = _parse_float(val_match.group("val_bpb"))
+            latest_step_avg_ms = _parse_float(val_match.group("step_avg_ms"))
     return {
         "latest_step": latest_step,
         "latest_train_loss": latest_train_loss,
         "latest_val_bpb": latest_val_bpb,
+        "latest_step_avg_ms": latest_step_avg_ms,
+        "latest_tok_s": latest_tok_s,
     }
 
 
@@ -125,6 +155,16 @@ def tail_local_lines(run_id: str, *, limit: int = 20) -> list[str]:
         if path.exists():
             return path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
     return []
+
+
+def load_local_metrics(run_id: str) -> dict[str, Any]:
+    path = RESULTS_DIR / run_id / "metrics.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
 
 
 def _status_filters(args: argparse.Namespace, manifest: dict[str, Any]) -> bool:
@@ -184,29 +224,47 @@ def render_status(rows: list[dict[str, Any]]) -> str:
         return "No runs found."
     headers = [
         ("Run ID", 34),
-        ("Group", 12),
-        ("Host", 14),
         ("Status", 8),
         ("Step", 6),
         ("Train", 8),
-        ("ValBPB", 8),
+        ("PostBPB", 8),
+        ("qgap", 8),
+        ("StepMs", 7),
+        ("Tok/s", 7),
+        ("Slack", 7),
         ("Elapsed", 8),
         ("Stale", 8),
         ("Cost", 7),
+        ("Host", 14),
+        ("Group", 12),
         ("Hypothesis", 14),
-        ("Notes", 16),
         ("Failure", 20),
     ]
-    lines = [" ".join(f"{name:<{width}}" for name, width in headers), "-" * 183]
+    lines = [" ".join(f"{name:<{width}}" for name, width in headers), "-" * 178]
     now_epoch = time.time()
     for manifest in sorted(rows, key=lambda item: item.get("start_time_epoch", 0), reverse=True):
         status = str(manifest.get("status") or "")
+        metrics = load_local_metrics(manifest["run_id"])
+        final = metrics.get("final", {})
+        train_steps = metrics.get("train_steps", [])
         progress = extract_progress(
             [manifest["last_log_line"]] if status == "running" and manifest.get("last_log_line") else tail_local_lines(manifest["run_id"])
         )
-        latest_step = progress["latest_step"]
-        latest_train_loss = progress["latest_train_loss"]
-        latest_val_bpb = progress["latest_val_bpb"]
+        latest_step = final.get("stop_step") or progress["latest_step"]
+        latest_train_loss = (
+            train_steps[-1].get("train_loss")
+            if train_steps
+            else progress["latest_train_loss"]
+        )
+        latest_val_bpb = final.get("val_bpb", progress["latest_val_bpb"])
+        qgap_bpb = final.get("qgap_bpb")
+        step_avg_ms = (
+            train_steps[-1].get("step_avg_ms")
+            if train_steps
+            else progress["latest_step_avg_ms"]
+        )
+        tok_s = metrics.get("tok_s", progress["latest_tok_s"])
+        slack = final.get("artifact_slack_bytes")
         elapsed_end = manifest.get("end_time_epoch") if status != "running" else now_epoch
         elapsed = None
         if manifest.get("start_time_epoch") is not None:
@@ -218,17 +276,20 @@ def render_status(rows: list[dict[str, Any]]) -> str:
         cost_display = f"{float(cost_text):.2f}" if isinstance(cost_text, (int, float)) else "N/A"
         values = [
             f"{manifest['run_id'][:34]:<34}",
-            f"{str(manifest.get('group') or '')[:12]:<12}",
-            f"{str(manifest.get('host_name') or manifest.get('host') or '')[:14]:<14}",
             f"{status[:8]:<8}",
             f"{str(latest_step or '')[:6]:<6}",
             f"{'' if latest_train_loss is None else f'{latest_train_loss:.4f}':<8}",
             f"{'' if latest_val_bpb is None else f'{latest_val_bpb:.4f}':<8}",
+            f"{'' if qgap_bpb is None else f'{qgap_bpb:.4f}':<8}",
+            f"{'' if step_avg_ms is None else f'{step_avg_ms:.1f}':<7}",
+            f"{compact_number(tok_s):<7}",
+            f"{compact_number(slack):<7}",
             f"{human_duration(elapsed):<8}",
             f"{human_duration(staleness):<8}",
             f"{cost_display:<7}",
+            f"{str(manifest.get('host_name') or manifest.get('host') or '')[:14]:<14}",
+            f"{str(manifest.get('group') or '')[:12]:<12}",
             f"{str(manifest.get('hypothesis_id') or '')[:14]:<14}",
-            f"{str(manifest.get('notes') or '')[:16]:<16}",
             f"{str(manifest.get('failure_reason') or '')[:20]:<20}",
         ]
         lines.append(" ".join(values))
@@ -445,7 +506,15 @@ def cmd_budget(args: argparse.Namespace) -> int:
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    payload = preflight.run_preflight_target(args.host, print_output=True)
+    config_env: dict[str, str] | None = None
+    warnings: list[str] = []
+    if args.config:
+        config_env, warnings, errors = preflight.load_preflight_env(args.config)
+        if errors:
+            for error in errors:
+                eprint(f"Error: {error}")
+            return 1
+    payload = preflight.run_preflight_target(args.host, config_env=config_env, warnings=warnings, print_output=True)
     return 0 if payload["ok"] else 1
 
 
@@ -466,7 +535,7 @@ def build_parser(*, include_internal: bool) -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Launch one config on one host")
     run_parser.add_argument("config")
     run_parser.add_argument("--host", required=True)
-    run_parser.add_argument("--gpus", type=int, default=8)
+    run_parser.add_argument("--gpus", type=int)
     run_parser.add_argument("--remote-dir")
     run_parser.add_argument("--shutdown", action="store_true")
     run_parser.add_argument("--skip-preflight", action="store_true")
@@ -478,7 +547,7 @@ def build_parser(*, include_internal: bool) -> argparse.ArgumentParser:
     sweep_parser = subparsers.add_parser("sweep", help="Run a sweep across one or more hosts")
     sweep_parser.add_argument("config")
     sweep_parser.add_argument("--hosts", nargs="+", required=True)
-    sweep_parser.add_argument("--gpus", type=int, default=8)
+    sweep_parser.add_argument("--gpus", type=int)
     sweep_parser.add_argument("--remote-dir")
     sweep_parser.add_argument("--detach", action="store_true")
     sweep_parser.add_argument("--shutdown", action="store_true")
@@ -488,7 +557,7 @@ def build_parser(*, include_internal: bool) -> argparse.ArgumentParser:
     resume_parser = subparsers.add_parser("resume-sweep", help="Resume a persistent sweep queue")
     resume_parser.add_argument("sweep_id")
     resume_parser.add_argument("--hosts", nargs="+", required=True)
-    resume_parser.add_argument("--gpus", type=int, default=8)
+    resume_parser.add_argument("--gpus", type=int)
     resume_parser.add_argument("--remote-dir")
     resume_parser.add_argument("--shutdown", action="store_true")
     resume_parser.add_argument("--skip-preflight", action="store_true")
@@ -532,6 +601,7 @@ def build_parser(*, include_internal: bool) -> argparse.ArgumentParser:
 
     preflight_parser = subparsers.add_parser("preflight", help="Run remote host preflight checks")
     preflight_parser.add_argument("host")
+    preflight_parser.add_argument("--config")
     preflight_parser.set_defaults(func=cmd_preflight)
 
     gc_parser = subparsers.add_parser("gc", help="Delete old remote /tmp/pgolf_* directories")
@@ -548,7 +618,7 @@ def build_parser(*, include_internal: bool) -> argparse.ArgumentParser:
         sweep_worker = subparsers.add_parser("_sweep_worker", help=argparse.SUPPRESS)
         sweep_worker.add_argument("sweep_id")
         sweep_worker.add_argument("--hosts", nargs="+", required=True)
-        sweep_worker.add_argument("--gpus", type=int, default=8)
+        sweep_worker.add_argument("--gpus", type=int)
         sweep_worker.add_argument("--remote-dir")
         sweep_worker.add_argument("--shutdown", action="store_true")
         sweep_worker.add_argument("--skip-preflight", action="store_true")

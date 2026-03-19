@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
 LAUNCH := $(PYTHON) experiments/scripts/launch.py
 VALIDATE := $(PYTHON) experiments/scripts/validate_config.py
 
@@ -8,7 +8,7 @@ validate:
 	$(VALIDATE) $(CONFIG)
 
 preflight:
-	$(LAUNCH) preflight $(HOST)
+	$(LAUNCH) preflight $(HOST) $(if $(CONFIG),--config $(CONFIG),)
 
 run:
 	$(LAUNCH) run $(CONFIG) --host $(HOST)
@@ -32,4 +32,4 @@ gc:
 	$(LAUNCH) gc $(HOST)
 
 test:
-	pytest experiments/scripts/tests/test_infra.py
+	$(PYTHON) -m pytest experiments/scripts/tests/test_infra.py

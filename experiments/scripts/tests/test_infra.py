@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import os
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import compare
 import config_utils
 import cost
+import export_eval
 import launch
 import launch_runtime
 import parse_log
@@ -32,7 +34,15 @@ assert gc_spec is not None and gc_spec.loader is not None
 pgolf_gc = importlib.util.module_from_spec(gc_spec)
 gc_spec.loader.exec_module(pgolf_gc)
 
+cache_spec = importlib.util.spec_from_file_location("pgolf_cached_fineweb_test", ROOT / "data" / "cached_challenge_fineweb.py")
+assert cache_spec is not None and cache_spec.loader is not None
+cached_fineweb = importlib.util.module_from_spec(cache_spec)
+cache_spec.loader.exec_module(cached_fineweb)
+
 BASELINE_CONFIG = ROOT / "experiments" / "configs" / "baseline.yaml"
+P0_SMOKE_CONFIG = ROOT / "experiments" / "configs" / "proxy_p0_smoke.yaml"
+P1_FAST_CONFIG = ROOT / "experiments" / "configs" / "proxy_p1_fast.yaml"
+E01_P1_CONFIG = ROOT / "experiments" / "configs" / "phase0_e01_baseline_p1.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
 BASELINE_LOG = ROOT / "records" / "track_10min_16mb" / "2026-03-17_NaiveBaseline" / "train.log"
 
@@ -42,16 +52,31 @@ def write_yaml(path: Path, text: str) -> Path:
     return path
 
 
-def write_metrics(path: Path, *, run_id: str, val_bpb: float, val_loss: float, status: str = "success") -> None:
+def write_metrics(
+    path: Path,
+    *,
+    run_id: str,
+    val_bpb: float,
+    val_loss: float,
+    status: str = "success",
+    prequant_val_bpb: float | None = None,
+    qgap_bpb: float | None = None,
+    artifact_slack_bytes: int = 123456,
+    tok_s: float = 1_500_000.0,
+) -> None:
     payload = {
         "run_id": run_id,
         "status": status,
-        "train_steps": [{"step": 123, "train_time_ms": 4567.0}],
+        "train_steps": [{"step": 123, "train_time_ms": 4567.0, "step_avg_ms": 37.1, "train_loss": 2.22}],
         "config": {"model_params": 999},
+        "tok_s": tok_s,
         "final": {
             "val_bpb": val_bpb,
             "val_loss": val_loss,
+            "prequant_val_bpb": prequant_val_bpb if prequant_val_bpb is not None else val_bpb - 0.01,
+            "qgap_bpb": qgap_bpb if qgap_bpb is not None else 0.01,
             "total_submission_bytes": 123456,
+            "artifact_slack_bytes": artifact_slack_bytes,
             "peak_memory_allocated_mib": 2048,
             "stop_step": 123,
         },
@@ -70,6 +95,134 @@ def test_validate_sweep_config() -> None:
     result = config_utils.validate_config(SWEEP_CONFIG)
     assert result.ok
     assert len(result.runs) == 15
+
+
+def test_validate_p0_smoke_config() -> None:
+    result = config_utils.validate_config(P0_SMOKE_CONFIG)
+    assert result.ok
+    env = result.runs[0].env
+    assert env["VAL_LOSS_EVERY"] == "0"
+    assert env["MAX_WALLCLOCK_SECONDS"] == "45"
+
+
+def test_validate_p1_fast_config() -> None:
+    result = config_utils.validate_config(P1_FAST_CONFIG)
+    assert result.ok
+    env = result.runs[0].env
+    assert env["VAL_LOSS_EVERY"] == "0"
+    assert env["MAX_WALLCLOCK_SECONDS"] == "300"
+    assert env["TRAIN_LOG_EVERY"] == "25"
+
+
+def test_validate_e01_p1_control_config() -> None:
+    result = config_utils.validate_config(E01_P1_CONFIG)
+    assert result.ok
+    assert len(result.runs) == 2
+    assert {run.env["SEED"] for run in result.runs} == {"1337", "2024"}
+
+
+def test_export_eval_parses_env_overrides() -> None:
+    parsed = export_eval.parse_env_overrides(["INT8_CLIP_PERCENTILE=99.99995", "INT8_KEEP_FLOAT_MAX_NUMEL=32768"])
+    assert parsed == {
+        "INT8_CLIP_PERCENTILE": "99.99995",
+        "INT8_KEEP_FLOAT_MAX_NUMEL": "32768",
+    }
+
+
+def test_export_eval_rejects_bad_env_override() -> None:
+    with pytest.raises(ValueError, match="expected KEY=VALUE"):
+        export_eval.parse_env_overrides(["INT8_CLIP_PERCENTILE"])
+
+
+def test_export_eval_default_outputs_do_not_clobber_run_artifacts(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "final_model.pt"
+    assert export_eval.default_artifact_out(checkpoint).name == "final_model.export_eval.int8.ptz"
+    assert export_eval.default_metrics_out(checkpoint).name == "final_model.export_eval.json"
+
+
+def test_export_eval_resolve_replay_inputs_prefers_manifest_metadata(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    checkpoint = run_dir / "final_model.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    trainer_snapshot = run_dir / "train_gpt.py"
+    trainer_snapshot.write_text("VALUE = 'snapshot'\n", encoding="utf-8")
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "resolved_env": {
+                    "RUN_ID": "from-manifest",
+                    "DATA_PATH": "/remote/data",
+                    "TOKENIZER_PATH": "/remote/tokenizer.model",
+                },
+                "group": "track-b",
+                "hypothesis_id": "X-05",
+                "notes": "manifest wins",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    replay = export_eval.resolve_replay_inputs(checkpoint, None)
+
+    assert replay.env_source == "manifest"
+    assert replay.env["RUN_ID"] == "from-manifest"
+    assert replay.metadata == {"group": "track-b", "hypothesis_id": "X-05", "notes": "manifest wins"}
+    assert replay.trainer_path == trainer_snapshot
+
+
+def test_export_eval_load_trainer_uses_explicit_snapshot_and_scrubs_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_repo = tmp_path / "fake_repo"
+    fake_repo.mkdir()
+    trainer_path = fake_repo / "train_gpt.py"
+    trainer_path.write_text(
+        "VALUE = __import__('os').environ.get('EXPORT_EVAL_SENTINEL', 'missing')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(export_eval, "extract_allowlist", lambda: {"EXPORT_EVAL_SENTINEL"})
+    monkeypatch.setenv("EXPORT_EVAL_SENTINEL", "ambient")
+
+    trainer = export_eval.load_trainer_with_env(trainer_path, {"EXPORT_EVAL_SENTINEL": "from-replay"})
+
+    assert trainer.VALUE == "from-replay"
+    assert os.environ["EXPORT_EVAL_SENTINEL"] == "ambient"
+
+
+def test_cached_fineweb_defaults_to_full_train_split() -> None:
+    args = cached_fineweb.build_parser().parse_args(["--variant", "sp1024"])
+    assert cached_fineweb.resolve_train_shards(args, 195) == 195
+
+
+def test_cached_fineweb_respects_explicit_train_shard_prefix() -> None:
+    args = cached_fineweb.build_parser().parse_args(["--variant", "sp1024", "--train-shards", "80"])
+    assert cached_fineweb.resolve_train_shards(args, 195) == 80
+
+
+def test_validate_exporter_env_vars_are_allowlisted(tmp_path: Path) -> None:
+    config_path = write_yaml(
+        tmp_path / "exporter_envs.yaml",
+        """
+        name: exporter_envs
+        env:
+          VOCAB_SIZE: "1024"
+          NUM_LAYERS: "9"
+          MODEL_DIM: "512"
+          NUM_HEADS: "8"
+          NUM_KV_HEADS: "4"
+          MLP_MULT: "2"
+          TIE_EMBEDDINGS: "1"
+          TRAIN_BATCH_TOKENS: "524288"
+          TRAIN_SEQ_LEN: "1024"
+          INT8_CLIP_PERCENTILE: "99.99995"
+          INT8_KEEP_FLOAT_MAX_NUMEL: "32768"
+        """,
+    )
+    result = config_utils.validate_config(config_path)
+    assert result.ok
+    assert not any("INT8_CLIP_PERCENTILE" in warning for warning in result.warnings)
+    assert not any("INT8_KEEP_FLOAT_MAX_NUMEL" in warning for warning in result.warnings)
 
 
 def test_detect_typo(tmp_path: Path) -> None:
@@ -244,16 +397,41 @@ def test_parse_scientific_notation() -> None:
     parsed = parse_log.parse_log(
         "\n".join(
             [
-                "step:1/10 train_loss:1.2e-05 train_time:3.4e+02ms step_avg:5.6e+02ms tok_s:7.8e+03",
+                "step:1/10 train_loss:1.2e-05 train_time:3.4e+02ms step_avg:5.6e+02ms tok_s:7.8e+03 train_tokens_seen:5.2e+05",
                 "step:1/10 val_loss:9.1e-06 val_bpb:1.2e+00 train_time:1.5e+02ms step_avg:2.5e+02ms",
+                "final_prequant_exact val_loss:9.9e-06 val_bpb:1.1e+00 train_tokens_seen:5.2e+05 eval_time:111ms",
+                "Serialized model int8+zlib: 123 bytes (payload:45 raw_torch:67 payload_ratio:8.9x)",
+                "Total submission size int8+zlib: 1000 bytes",
                 "final_int8_zlib_roundtrip_exact val_loss:1.2e-05 val_bpb:3.4e-06",
+                "quantization_delta_exact val_loss:2.1e-06 val_bpb:4.5e-06 train_tokens_seen:5.2e+05",
             ]
         )
     )
     assert parsed["train_steps"][0]["train_loss"] == pytest.approx(1.2e-05)
     assert parsed["train_steps"][0]["train_time_ms"] == pytest.approx(340.0)
+    assert parsed["train_steps"][0]["train_tokens_seen"] == 520000
     assert parsed["val_steps"][0]["val_loss"] == pytest.approx(9.1e-06)
     assert parsed["final"]["val_bpb"] == pytest.approx(3.4e-06)
+    assert parsed["final"]["prequant_val_bpb"] == pytest.approx(1.1)
+    assert parsed["final"]["payload_bytes"] == 45
+    assert parsed["final"]["payload_ratio"] == pytest.approx(8.9)
+    assert parsed["final"]["artifact_slack_bytes"] == 15_999_000
+    assert parsed["train_tokens_seen"] == 520000
+
+
+def test_parse_derives_qgap_without_explicit_delta_line() -> None:
+    parsed = parse_log.parse_log(
+        "\n".join(
+            [
+                "final_prequant_exact val_loss:2.00000000 val_bpb:1.00000000 train_tokens_seen:1024 eval_time:1ms",
+                "Total submission size int8+zlib: 2048 bytes",
+                "final_int8_zlib_roundtrip_exact val_loss:2.50000000 val_bpb:1.25000000",
+            ]
+        )
+    )
+    assert parsed["final"]["qgap_loss"] == pytest.approx(0.5)
+    assert parsed["final"]["qgap_bpb"] == pytest.approx(0.25)
+    assert parsed["final"]["artifact_slack_bytes"] == 15_997_952
 
 
 def test_parse_failed_run() -> None:
@@ -275,6 +453,8 @@ def test_compare_single_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cap
     compare.main()
     output = capsys.readouterr().out
     assert "solo" in output
+    assert "Δpq" in output
+    assert "qgap" in output
     assert "1.2300*" in output
 
 
@@ -285,10 +465,12 @@ def test_compare_sorts_by_bpb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, c
     write_metrics(better, run_id="better", val_bpb=1.20, val_loss=2.10)
     monkeypatch.setattr(sys, "argv", ["compare.py", str(worse), str(better)])
     compare.main()
-    lines = capsys.readouterr().out.splitlines()
+    output = capsys.readouterr().out
+    lines = output.splitlines()
     data_lines = [line for line in lines if " | " in line and not line.startswith("Run ID")]
     assert data_lines[0].startswith("better")
     assert data_lines[1].startswith("worse")
+    assert "+0.1000" in output or "-0.1000" in output
 
 
 def test_submit_uses_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,6 +533,52 @@ def test_build_manifest_includes_metadata_and_wandb_forwarding(monkeypatch: pyte
     assert manifest["_forwarded_env"]["PGOLF_WANDB_GROUP"] == "g1"
     assert manifest["_forwarded_env"]["PGOLF_WANDB_NOTES"] == "hello"
     assert manifest["_forwarded_env"]["PGOLF_WANDB_TAGS"] == "hypothesis:h1"
+    assert manifest["_forwarded_env"]["DATA_PATH"] == "/remote/shared/data/datasets/fineweb10B_sp1024"
+    assert manifest["_forwarded_env"]["TOKENIZER_PATH"] == "/remote/shared/data/tokenizers/fineweb_1024_bpe.model"
+    assert manifest["_forwarded_env"]["DATASET_VARIANT"] == "sp1024"
+
+
+def test_build_manifest_preserves_explicit_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        launch_runtime,
+        "resolve_machine",
+        lambda host: ("alpha", {"host": "root@example", "remote_dir": "/remote/shared", "gpus": 8, "hourly_rate": 12.0}, []),
+    )
+    monkeypatch.setattr(launch_runtime, "git_sha", lambda: "abc123")
+    monkeypatch.setattr(launch_runtime, "sha256_file", lambda path: "deadbeef")
+    manifest = launch_runtime.build_manifest(
+        BASELINE_CONFIG,
+        {
+            "DATA_PATH": "/custom/data/datasets/fineweb10B_sp768",
+            "TOKENIZER_PATH": "/custom/data/tokenizers/fineweb_768_bpe.model",
+        },
+        "custom-paths",
+        "alpha",
+        8,
+        None,
+    )
+    assert manifest["_forwarded_env"]["DATA_PATH"] == "/custom/data/datasets/fineweb10B_sp768"
+    assert manifest["_forwarded_env"]["TOKENIZER_PATH"] == "/custom/data/tokenizers/fineweb_768_bpe.model"
+    assert "DATASET_VARIANT" not in manifest["_forwarded_env"]
+
+
+def test_build_manifest_defaults_to_machine_gpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        launch_runtime,
+        "resolve_machine",
+        lambda host: ("alpha", {"host": "root@example", "remote_dir": "/remote/shared", "gpus": 1, "hourly_rate": 12.0}, []),
+    )
+    monkeypatch.setattr(launch_runtime, "git_sha", lambda: "abc123")
+    monkeypatch.setattr(launch_runtime, "sha256_file", lambda path: "deadbeef")
+    manifest = launch_runtime.build_manifest(
+        BASELINE_CONFIG,
+        {},
+        "machine-gpus",
+        "alpha",
+        None,
+        None,
+    )
+    assert manifest["gpus"] == 1
 
 
 def test_collect_run_downloads_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -475,7 +703,12 @@ def test_status_batches_by_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     assert sum(host == "host-1" for host, _ in ssh_calls) == 2
 
 
-def test_render_status_includes_rich_columns() -> None:
+def test_render_status_includes_rich_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    results_dir = tmp_path / "results"
+    run_dir = results_dir / "run-1"
+    run_dir.mkdir(parents=True)
+    write_metrics(run_dir / "metrics.json", run_id="run-1", val_bpb=1.22, val_loss=2.07, artifact_slack_bytes=9_350_400)
+    monkeypatch.setattr(launch, "RESULTS_DIR", results_dir)
     output = launch.render_status(
         [
             {
@@ -494,6 +727,8 @@ def test_render_status_includes_rich_columns() -> None:
         ]
     )
     assert "Failure" in output
+    assert "qgap" in output
+    assert "Tok/s" in output
     assert "cuda_oom" in output
     assert "grp" in output
 
@@ -503,7 +738,8 @@ def test_ensure_remote_data_uses_flock(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
         commands.append(command)
-        return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        code = 1 if command.startswith("test -f ") else 0
+        return subprocess.CompletedProcess(["ssh", host, command], code, "", "")
 
     monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
     manifest = {
@@ -511,10 +747,32 @@ def test_ensure_remote_data_uses_flock(monkeypatch: pytest.MonkeyPatch) -> None:
         "resolved_env": {
             "DATA_PATH": "/shared/data/datasets/fineweb10B_sp1024",
             "TOKENIZER_PATH": "/shared/data/tokenizers/fineweb_1024_bpe.model",
+            "DATASET_VARIANT": "sp1024",
         },
+        "machine_remote_dir": "/shared",
     }
     launch_runtime.ensure_remote_data(manifest)
-    assert "flock -x /tmp/pgolf_data.lock python3 data/cached_challenge_fineweb.py --variant sp1024" in commands[0]
+    assert commands[0].startswith("test -f ")
+    assert "flock -x /tmp/pgolf_data.lock" in commands[1]
+    assert config_utils.remote_python_command("/shared", "data/cached_challenge_fineweb.py --variant sp1024") in commands[1]
+
+
+def test_ensure_remote_data_rejects_custom_missing_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        launch_runtime,
+        "ssh",
+        lambda host, command, *, capture=False, check=True: subprocess.CompletedProcess(["ssh", host, command], 1, "", ""),
+    )
+    manifest = {
+        "host": "example",
+        "resolved_env": {
+            "DATA_PATH": "/custom/datasets/experimental",
+            "TOKENIZER_PATH": "/custom/tokenizers/experimental.model",
+        },
+        "machine_remote_dir": "/remote/shared",
+    }
+    with pytest.raises(RuntimeError, match="no DATASET_VARIANT was provided"):
+        launch_runtime.ensure_remote_data(manifest)
 
 
 def test_verify_remote_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -525,8 +783,8 @@ def test_verify_remote_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
         return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
 
     monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
-    launch_runtime.verify_remote_dependencies({"host": "example", "remote_repo_dir": "/remote/repo"})
-    assert "import torch; import sentencepiece; import numpy" in commands[0]
+    launch_runtime.verify_remote_dependencies({"host": "example", "remote_repo_dir": "/remote/repo", "machine_remote_dir": "/shared"})
+    assert config_utils.remote_python_command("/shared", "-c 'import torch; import sentencepiece; import numpy'") in commands[0]
 
 
 def test_start_remote_run_uses_unique_heredoc_and_verifies_startup(
@@ -545,6 +803,7 @@ def test_start_remote_run_uses_unique_heredoc_and_verifies_startup(
         "run_id": "run-with-EOF",
         "host": "example",
         "gpus": 8,
+        "machine_remote_dir": "/shared",
         "remote_repo_dir": "/remote/repo",
         "remote_pid_path": "/remote/pid",
         "remote_exit_code_path": "/remote/exit_code",
@@ -560,6 +819,7 @@ def test_start_remote_run_uses_unique_heredoc_and_verifies_startup(
     assert "<<'PGOLF_ENV_EOF_" in command
     assert "sleep 2" in command
     assert "kill -0" in command
+    assert config_utils.remote_python_command("/shared", "-m torch.distributed.run --standalone --nproc_per_node=8 train_gpt.py") in command
     assert manifest["pid"] == 4321
 
 
@@ -583,9 +843,10 @@ def test_watchdog_detects_stall_and_regression() -> None:
     stalled = watchdog.evaluate_snapshot(
         {
             "lines": ["step:150/200 train_loss:1.0 train_time:100ms step_avg:1000ms"],
-            "mtime_epoch": now_epoch - 10,
+            "mtime_epoch": now_epoch - 70,
         },
         now_epoch=now_epoch,
+        train_log_every=1,
     )
     regressing = watchdog.evaluate_snapshot(
         {
@@ -603,6 +864,19 @@ def test_watchdog_detects_stall_and_regression() -> None:
     assert regressing["failure_reason"] == "regressing_val_bpb"
 
 
+def test_watchdog_respects_train_log_cadence() -> None:
+    now_epoch = time.time()
+    outcome = watchdog.evaluate_snapshot(
+        {
+            "lines": ["step:110/20000 train_loss:4.4018 train_time:36416ms step_avg:331.06ms"],
+            "mtime_epoch": now_epoch - 5,
+        },
+        now_epoch=now_epoch,
+        train_log_every=10,
+    )
+    assert outcome["triggered"] is False
+
+
 def test_watchdog_check_kills_run(monkeypatch: pytest.MonkeyPatch) -> None:
     saved: list[dict[str, object]] = []
     terminated: list[str] = []
@@ -618,15 +892,20 @@ def test_watchdog_check_kills_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_preflight_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(preflight, "resolve_machine", lambda host: ("alpha", {"host": "root@example", "remote_dir": "/shared", "gpus": 8}, []))
+    python_cmd = config_utils.remote_python_command("/shared", "-c 'import torch; print(torch.cuda.device_count())'")
+    deps_cmd = config_utils.remote_python_command("/shared", "-c 'import sentencepiece, numpy; print(\"ok\")'")
+    disk_cmd = config_utils.remote_python_command("/shared", "-c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'")
 
     def fake_ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
         mapping = {
             "echo ok": "ok\n",
             "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l": "8\n",
-            "python3 -c 'import torch; print(torch.cuda.device_count())'": "8\n",
-            "python3 -c 'import sentencepiece, numpy; print(\"ok\")'": "ok\n",
-            "python3 -c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'": "200\n",
+            python_cmd: "8\n",
+            deps_cmd: "ok\n",
+            disk_cmd: "200\n",
         }
+        if "PGOLF_PYTHON_BIN" in command and preflight.COMPILE_TOOLCHAIN_CHECK in command:
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "ok\n", "")
         if command.startswith("test -d "):
             return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
         if command.startswith("mkdir -p /tmp/pgolf_preflight_test"):
@@ -637,6 +916,53 @@ def test_preflight_success(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = preflight.run_preflight_target("alpha", print_output=False)
     assert payload["ok"] is True
     assert all(result["ok"] for result in payload["results"])
+
+
+def test_preflight_uses_config_selected_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = write_yaml(
+        tmp_path / "preflight_paths.yaml",
+        """
+        name: preflight_paths
+        env:
+          VOCAB_SIZE: "1024"
+          NUM_LAYERS: "9"
+          MODEL_DIM: "512"
+          NUM_HEADS: "8"
+          NUM_KV_HEADS: "4"
+          MLP_MULT: "2"
+          TIE_EMBEDDINGS: "1"
+          TRAIN_BATCH_TOKENS: "524288"
+          TRAIN_SEQ_LEN: "1024"
+          DATA_PATH: "/shared/data/datasets/fineweb10B_sp768"
+          TOKENIZER_PATH: "/shared/data/tokenizers/fineweb_768_bpe.model"
+        """,
+    )
+    monkeypatch.setattr(preflight, "resolve_machine", lambda host: ("alpha", {"host": "root@example", "remote_dir": "/shared", "gpus": 8}, []))
+    python_cmd = config_utils.remote_python_command("/shared", "-c 'import torch; print(torch.cuda.device_count())'")
+    deps_cmd = config_utils.remote_python_command("/shared", "-c 'import sentencepiece, numpy; print(\"ok\")'")
+    disk_cmd = config_utils.remote_python_command("/shared", "-c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'")
+
+    def fake_ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
+        mapping = {
+            "echo ok": "ok\n",
+            "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l": "8\n",
+            python_cmd: "8\n",
+            deps_cmd: "ok\n",
+            disk_cmd: "200\n",
+        }
+        if "PGOLF_PYTHON_BIN" in command and preflight.COMPILE_TOOLCHAIN_CHECK in command:
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "ok\n", "")
+        if command == "test -d '/shared/data/datasets/fineweb10B_sp768' && test -f '/shared/data/tokenizers/fineweb_768_bpe.model'":
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        if command.startswith("mkdir -p /tmp/pgolf_preflight_test"):
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        return subprocess.CompletedProcess(["ssh", host, command], 0, mapping[command], "")
+
+    monkeypatch.setattr(preflight, "ssh_capture", fake_ssh)
+    config_env, warnings, errors = preflight.load_preflight_env(str(config_path))
+    assert errors == []
+    payload = preflight.run_preflight_target("alpha", config_env=config_env, warnings=warnings, print_output=False)
+    assert payload["ok"] is True
 
 
 def test_cost_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -55,8 +55,13 @@ def parse_log(text: str) -> dict[str, object]:
                 "train_time_ms": float(m.group(4)),
                 "step_avg_ms": float(m.group(5)),
             }
+            kv = parse_kv(line)
             if m.group(6):
                 entry["tok_s"] = float(m.group(6))
+                result["tok_s"] = entry["tok_s"]
+            if "train_tokens_seen" in kv:
+                entry["train_tokens_seen"] = int(float(kv["train_tokens_seen"]))
+                result["train_tokens_seen"] = entry["train_tokens_seen"]
             result["train_steps"].append(entry)
             continue
 
@@ -130,6 +135,16 @@ def parse_log(text: str) -> dict[str, object]:
                 result["final"]["stop_step"] = int(kv["step"].split("/")[0])
             continue
 
+        if line.startswith("train_tokens_seen:"):
+            kv = parse_kv(line)
+            if "train_tokens_seen" in kv:
+                value = int(float(kv["train_tokens_seen"]))
+                result["train_tokens_seen"] = value
+                result["final"]["train_tokens_seen"] = value
+            if "tok_s" in kv:
+                result["tok_s"] = float(kv["tok_s"])
+            continue
+
         # Peak memory
         m = re.search(r"peak memory allocated:\s*(\d+)\s*MiB\s*reserved:\s*(\d+)\s*MiB", line)
         if m:
@@ -146,6 +161,11 @@ def parse_log(text: str) -> dict[str, object]:
         m = re.match(r"Serialized model int8\+zlib:\s*(\d+)\s*bytes", line)
         if m:
             result["final"]["model_bytes_int8_zlib"] = int(m.group(1))
+            payload_match = re.search(r"payload:(\d+)\s+raw_torch:(\d+)\s+payload_ratio:([\d.]+)x", line)
+            if payload_match:
+                result["final"]["payload_bytes"] = int(payload_match.group(1))
+                result["final"]["payload_raw_torch_bytes"] = int(payload_match.group(2))
+                result["final"]["payload_ratio"] = float(payload_match.group(3))
             continue
 
         m = re.match(r"Total submission size int8\+zlib:\s*(\d+)\s*bytes", line)
@@ -160,11 +180,27 @@ def parse_log(text: str) -> dict[str, object]:
 
         # Final roundtrip exact
         m = re.match(
+            rf"final_prequant_exact\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}",
+            line,
+        )
+        if m:
+            result["final"]["prequant_val_loss"] = float(m.group(1))
+            result["final"]["prequant_val_bpb"] = float(m.group(2))
+            kv = parse_kv(line)
+            if "train_tokens_seen" in kv:
+                value = int(float(kv["train_tokens_seen"]))
+                result["train_tokens_seen"] = value
+                result["final"]["train_tokens_seen"] = value
+            continue
+
+        m = re.match(
             rf"final_int8_zlib_roundtrip_exact\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}",
             line,
         )
         if m:
             saw_exact_roundtrip = True
+            result["final"]["postquant_val_loss"] = float(m.group(1))
+            result["final"]["postquant_val_bpb"] = float(m.group(2))
             result["final"]["val_loss"] = float(m.group(1))
             result["final"]["val_bpb"] = float(m.group(2))
             continue
@@ -178,13 +214,43 @@ def parse_log(text: str) -> dict[str, object]:
             result["final"]["roundtrip_eval_time_ms"] = int(m.group(3))
             # Don't overwrite exact values if already set
             if "val_loss" not in result["final"]:
+                result["final"]["postquant_val_loss"] = float(m.group(1))
+                result["final"]["postquant_val_bpb"] = float(m.group(2))
                 result["final"]["val_loss"] = float(m.group(1))
                 result["final"]["val_bpb"] = float(m.group(2))
+            continue
+
+        m = re.match(
+            rf"quantization_delta_exact\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}",
+            line,
+        )
+        if m:
+            result["final"]["qgap_loss"] = float(m.group(1))
+            result["final"]["qgap_bpb"] = float(m.group(2))
+            kv = parse_kv(line)
+            if "train_tokens_seen" in kv:
+                value = int(float(kv["train_tokens_seen"]))
+                result["train_tokens_seen"] = value
+                result["final"]["train_tokens_seen"] = value
             continue
 
     # Derive run_id from config if available
     if "run_id" in result["config"]:
         result["run_id"] = result["config"].pop("run_id")
+    if "prequant_val_bpb" in result["final"] and "postquant_val_bpb" in result["final"]:
+        result["final"].setdefault(
+            "qgap_bpb",
+            result["final"]["postquant_val_bpb"] - result["final"]["prequant_val_bpb"],
+        )
+    if "prequant_val_loss" in result["final"] and "postquant_val_loss" in result["final"]:
+        result["final"].setdefault(
+            "qgap_loss",
+            result["final"]["postquant_val_loss"] - result["final"]["prequant_val_loss"],
+        )
+    if "total_submission_bytes" in result["final"]:
+        result["final"]["artifact_slack_bytes"] = 16_000_000 - int(result["final"]["total_submission_bytes"])
+    if "train_tokens_seen" in result:
+        result["final"]["train_tokens_seen"] = int(result["train_tokens_seen"])
     result["status"] = "success" if saw_exact_roundtrip else "failed"
 
     return result

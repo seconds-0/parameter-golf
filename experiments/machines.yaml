@@ -1,8 +1,29 @@
-budget_total: 5000
+budget_total: 300
+
+phase_caps:
+  phase0: 30
+  phase1: 75
+  phase2: 105
+  phase3: 60
+  reserve: 30
 
 machines:
+  local:
+    host: "local"
+    remote_dir: /Users/alexanderhuth/Code/oai-param-golf
+    gpus: 0
+    hourly_rate: 0.0
+    shutdown_after_idle_minutes: 0
+    labels: [local, reference]
+  vast-1xh100:
+    host: "vast-1xh100-control"
+    remote_dir: /workspace/parameter-golf
+    gpus: 1
+    hourly_rate: 3.0
+    shutdown_after_idle_minutes: 2
+    labels: [h100, 1gpu]
   vast-8xh100:
-    host: "root@<ip>"
+    host: "vast-8xh100-control"
     remote_dir: /workspace/parameter-golf
     gpus: 8
     hourly_rate: 20.0

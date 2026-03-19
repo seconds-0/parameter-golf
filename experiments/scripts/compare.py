@@ -21,6 +21,27 @@ def fmt_number(value: float | int | None, width: int, precision: int = 4, *, sta
     return f"{text:>{width}}"
 
 
+def fmt_delta(value: float | None, width: int, precision: int = 4) -> str:
+    if value is None:
+        return f"{'N/A':>{width}}"
+    return f"{value:+.{precision}f}".rjust(width)
+
+
+def fmt_compact(value: float | int | None, width: int, precision: int = 2) -> str:
+    if value is None:
+        return f"{'N/A':>{width}}"
+    suffix = ""
+    number = float(value)
+    if abs(number) >= 1_000_000:
+        number /= 1_000_000
+        suffix = "M"
+    elif abs(number) >= 1_000:
+        number /= 1_000
+        suffix = "K"
+    text = f"{number:.{precision}f}{suffix}"
+    return f"{text:>{width}}"
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: compare.py <metrics1.json> [metrics2.json ...]", file=sys.stderr)
@@ -28,6 +49,8 @@ def main():
         sys.exit(1)
 
     runs = []
+    reference_post_bpb: float | None = None
+    reference_qgap_bpb: float | None = None
     for arg in sys.argv[1:]:
         path = Path(arg)
         if not path.exists():
@@ -37,13 +60,17 @@ def main():
         run_id = data.get("run_id") or path.parent.name
         final = data.get("final", {})
         config = data.get("config", {})
-        runs.append({
+        run = {
             "run_id": run_id,
-            "val_bpb": final.get("val_bpb"),
-            "val_loss": final.get("val_loss"),
+            "postquant_val_bpb": final.get("val_bpb"),
+            "postquant_val_loss": final.get("val_loss"),
+            "prequant_val_bpb": final.get("prequant_val_bpb"),
+            "qgap_bpb": final.get("qgap_bpb"),
             "steps": final.get("stop_step") or (data["train_steps"][-1]["step"] if data.get("train_steps") else None),
             "time_s": (data["train_steps"][-1]["train_time_ms"] / 1000) if data.get("train_steps") else None,
-            "model_mb": final.get("total_submission_bytes", 0) / 1_000_000,
+            "step_avg_ms": (data["train_steps"][-1]["step_avg_ms"] if data.get("train_steps") else None),
+            "tok_s": data.get("tok_s"),
+            "slack_bytes": final.get("artifact_slack_bytes"),
             "peak_mem": final.get("peak_memory_allocated_mib"),
             "params": config.get("model_params"),
             "host": data.get("host"),
@@ -52,38 +79,52 @@ def main():
             "group": data.get("group"),
             "hypothesis_id": data.get("hypothesis_id"),
             "notes": data.get("notes"),
-        })
+        }
+        if reference_post_bpb is None:
+            reference_post_bpb = run["postquant_val_bpb"]
+            reference_qgap_bpb = run["qgap_bpb"]
+        run["delta_pq"] = (
+            run["postquant_val_bpb"] - reference_post_bpb
+            if run["postquant_val_bpb"] is not None and reference_post_bpb is not None
+            else None
+        )
+        run["delta_qgap"] = (
+            run["qgap_bpb"] - reference_qgap_bpb
+            if run["qgap_bpb"] is not None and reference_qgap_bpb is not None
+            else None
+        )
+        runs.append(run)
 
     if not runs:
         print("No runs to compare.", file=sys.stderr)
         sys.exit(1)
 
-    # Sort by val_bpb (best first)
-    runs.sort(key=lambda r: r["val_bpb"] if r["val_bpb"] is not None else float("inf"))
+    # Sort by post-roundtrip val_bpb (best first).
+    runs.sort(key=lambda r: r["postquant_val_bpb"] if r["postquant_val_bpb"] is not None else float("inf"))
 
     # Find best
-    best_bpb = runs[0]["val_bpb"] if runs[0]["val_bpb"] is not None else None
+    best_bpb = runs[0]["postquant_val_bpb"] if runs[0]["postquant_val_bpb"] is not None else None
 
     # Print table
     hdr = (
-        f"{'Run ID':<30} | {'Group':<14} | {'Hypothesis':<16} | {'Host':<12} | {'Status':<7} | "
-        f"{'val_bpb':>9} | {'val_loss':>8} | {'Cost($)':>7} | {'Steps':>6} | {'Time(s)':>7} | {'Notes':<18}"
+        f"{'Run ID':<30} | {'Status':<7} | {'PostBPB':>9} | {'Δpq':>8} | {'PreBPB':>9} | {'qgap':>8} | "
+        f"{'StepMs':>7} | {'Tok/s':>7} | {'Slack':>7} | {'Cost($)':>7} | {'Host':<12} | {'Group':<12} | {'Hypothesis':<16}"
     )
     sep = "-" * len(hdr)
     print(hdr)
     print(sep)
     for r in runs:
-        best = r["val_bpb"] == best_bpb and best_bpb is not None
+        best = r["postquant_val_bpb"] == best_bpb and best_bpb is not None
         host = str(r["host"] or "N/A")[:12]
-        group = str(r["group"] or "N/A")[:14]
+        group = str(r["group"] or "N/A")[:12]
         hypothesis = str(r["hypothesis_id"] or "N/A")[:16]
-        notes = str(r["notes"] or "")[:18]
         cost = fmt_number(r["cost"], 7, 2)
-        time_s = fmt_number(r["time_s"], 7, 1)
         print(
-            f"{r['run_id']:<30} | {group:<14} | {hypothesis:<16} | {host:<12} | {str(r['status']):<7} | "
-            f"{fmt_number(r['val_bpb'], 9, 4, star=best)} | {fmt_number(r['val_loss'], 8, 4)} | "
-            f"{cost} | {fmt_number(r['steps'], 6)} | {time_s} | {notes:<18}"
+            f"{r['run_id']:<30} | {str(r['status']):<7} | "
+            f"{fmt_number(r['postquant_val_bpb'], 9, 4, star=best)} | {fmt_delta(r['delta_pq'], 8, 4)} | "
+            f"{fmt_number(r['prequant_val_bpb'], 9, 4)} | {fmt_number(r['qgap_bpb'], 8, 4)} | "
+            f"{fmt_number(r['step_avg_ms'], 7, 1)} | {fmt_compact(r['tok_s'], 7)} | {fmt_compact(r['slack_bytes'], 7)} | "
+            f"{cost} | {host:<12} | {group:<12} | {hypothesis:<16}"
         )
 
 

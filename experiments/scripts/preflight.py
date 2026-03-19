@@ -4,11 +4,25 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
-from config_utils import MACHINES_FILE, resolve_machine
+from config_utils import MACHINES_FILE, remote_python_command, resolve_machine, resolve_path, validate_config, with_default_paths
+
+COMPILE_TOOLCHAIN_CHECK = """PYTHON_BIN=${PGOLF_PYTHON_BIN:-python3}
+if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
+"$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+from sysconfig import get_paths
+import shutil
+
+header = Path(get_paths()["include"]) / "Python.h"
+compiler = shutil.which("gcc") or shutil.which("cc")
+print("ok" if header.is_file() and compiler else f"missing header={header.is_file()} compiler={bool(compiler)} include={header}")
+PY"""
 
 
 def ssh_capture(host: str, command: str) -> subprocess.CompletedProcess[str]:
@@ -28,7 +42,25 @@ def _fail(name: str, detail: str) -> dict[str, Any]:
     return {"name": name, "ok": False, "detail": detail}
 
 
-def run_preflight_target(host_or_machine: str, *, print_output: bool = True) -> dict[str, Any]:
+def load_preflight_env(config_path_arg: str) -> tuple[dict[str, str] | None, list[str], list[str]]:
+    config_path = resolve_path(config_path_arg)
+    result = validate_config(config_path)
+    warnings = list(result.warnings)
+    errors = list(result.errors)
+    if errors:
+        return None, warnings, errors
+    if len(result.runs) != 1:
+        return None, warnings, [f"Config {config_path} expands to {len(result.runs)} runs; preflight requires exactly 1 run"]
+    return result.runs[0].env, warnings, []
+
+
+def run_preflight_target(
+    host_or_machine: str,
+    *,
+    config_env: dict[str, str] | None = None,
+    warnings: list[str] | None = None,
+    print_output: bool = True,
+) -> dict[str, Any]:
     machine_name, machine, errors = resolve_machine(host_or_machine)
     results: list[dict[str, Any]] = []
     if errors or machine is None:
@@ -41,8 +73,11 @@ def run_preflight_target(host_or_machine: str, *, print_output: bool = True) -> 
     host = str(machine["host"])
     shared_dir = str(machine.get("remote_dir") or "")
     expected_gpus = int(machine.get("gpus") or 0)
-    data_path = f"{shared_dir}/data/datasets/fineweb10B_sp1024"
-    tokenizer_path = f"{shared_dir}/data/tokenizers/fineweb_1024_bpe.model"
+    for warning in warnings or []:
+        results.append(_ok("config_warning", warning))
+    resolved_env = with_default_paths(config_env or {}, shared_dir)
+    data_path = resolved_env["DATA_PATH"]
+    tokenizer_path = resolved_env["TOKENIZER_PATH"]
 
     connectivity = ssh_capture(host, "echo ok")
     if connectivity.returncode != 0 or connectivity.stdout.strip() != "ok":
@@ -60,7 +95,7 @@ def run_preflight_target(host_or_machine: str, *, print_output: bool = True) -> 
     else:
         results.append(_fail("gpu_count", f"expected {expected_gpus}, got {gpu_count}"))
 
-    torch_proc = ssh_capture(host, "python3 -c 'import torch; print(torch.cuda.device_count())'")
+    torch_proc = ssh_capture(host, remote_python_command(shared_dir, "-c 'import torch; print(torch.cuda.device_count())'"))
     torch_count = int(torch_proc.stdout.strip() or "0") if torch_proc.returncode == 0 else 0
     if torch_proc.returncode == 0 and torch_count == expected_gpus:
         results.append(_ok("torch_cuda", f"torch sees {torch_count} GPUs"))
@@ -68,13 +103,23 @@ def run_preflight_target(host_or_machine: str, *, print_output: bool = True) -> 
         detail = torch_proc.stderr.strip() or f"torch sees {torch_count} GPUs"
         results.append(_fail("torch_cuda", detail))
 
-    deps_proc = ssh_capture(host, "python3 -c 'import sentencepiece, numpy; print(\"ok\")'")
+    deps_proc = ssh_capture(host, remote_python_command(shared_dir, "-c 'import sentencepiece, numpy; print(\"ok\")'"))
     if deps_proc.returncode == 0 and deps_proc.stdout.strip() == "ok":
         results.append(_ok("deps", "sentencepiece and numpy import"))
     else:
         results.append(_fail("deps", deps_proc.stderr.strip() or deps_proc.stdout.strip() or "dependency import failed"))
 
-    disk_proc = ssh_capture(host, "python3 -c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'")
+    toolchain_proc = ssh_capture(
+        host,
+        f"export PGOLF_PYTHON_BIN={shlex.quote(str(Path(shared_dir) / '.venv' / 'bin' / 'python'))}; {COMPILE_TOOLCHAIN_CHECK}",
+    )
+    if toolchain_proc.returncode == 0 and toolchain_proc.stdout.strip() == "ok":
+        results.append(_ok("compile_toolchain", "Python.h and gcc present"))
+    else:
+        detail = toolchain_proc.stderr.strip() or toolchain_proc.stdout.strip() or "missing Python build headers or compiler"
+        results.append(_fail("compile_toolchain", detail))
+
+    disk_proc = ssh_capture(host, remote_python_command(shared_dir, "-c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'"))
     free_gb = int(disk_proc.stdout.strip() or "0") if disk_proc.returncode == 0 else 0
     if disk_proc.returncode == 0 and free_gb > 10:
         results.append(_ok("disk", f"{free_gb}GB free in /tmp"))
@@ -115,12 +160,28 @@ def print_report(payload: dict[str, Any]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run remote host preflight checks")
     parser.add_argument("host_or_machine")
+    parser.add_argument("--config")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    payload = run_preflight_target(args.host_or_machine, print_output=True)
+    config_env: dict[str, str] | None = None
+    warnings: list[str] = []
+    if args.config:
+        config_env, warnings, errors = load_preflight_env(args.config)
+        if errors:
+            summary = "; ".join(errors)
+            payload = {
+                "ok": False,
+                "host": args.host_or_machine,
+                "machine_name": args.host_or_machine,
+                "results": [_fail("config", summary)],
+                "summary": summary,
+            }
+            print_report(payload)
+            return 1
+    payload = run_preflight_target(args.host_or_machine, config_env=config_env, warnings=warnings, print_output=True)
     return 0 if payload["ok"] else 1
 
 

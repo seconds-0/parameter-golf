@@ -1,0 +1,10 @@
+extends: baseline.yaml
+
+name: proxy_p0_smoke
+description: "Short baseline smoke run for end-to-end harness validation"
+
+env:
+  MAX_WALLCLOCK_SECONDS: "45"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "10"
+  WARMUP_STEPS: "1"

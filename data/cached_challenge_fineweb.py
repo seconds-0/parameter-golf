@@ -96,8 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--train-shards",
         type=int,
-        default=80,
-        help="Number of training shards to download for the selected variant. Defaults to 80.",
+        default=None,
+        help="Number of training shards to download for the selected variant. Defaults to the full published train split.",
     )
     parser.add_argument(
         "--variant",
@@ -117,23 +117,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_train_shards(args: argparse.Namespace, max_train_shards: int) -> int:
+    if args.train_shards_positional is not None:
+        train_shards = args.train_shards_positional
+    elif args.train_shards is not None:
+        train_shards = args.train_shards
+    else:
+        train_shards = max_train_shards
+    if train_shards < 0:
+        raise ValueError("train_shards must be non-negative")
+    if train_shards > max_train_shards:
+        raise ValueError(
+            f"{args.variant} only has {max_train_shards} training shards on {REPO_ID}, requested {train_shards}"
+        )
+    return train_shards
+
+
 def main() -> None:
     args = build_parser().parse_args()
     dataset_dir = dataset_dir_for_variant(args.variant)
-    train_shards = args.train_shards_positional if args.train_shards_positional is not None else args.train_shards
-    if train_shards < 0:
-        raise ValueError("train_shards must be non-negative")
 
     manifest = load_manifest(skip_manifest_download=args.skip_manifest)
     dataset_entry = next((x for x in manifest.get("datasets", []) if x.get("name") == dataset_dir), None)
     if dataset_entry is None:
         raise ValueError(f"dataset {dataset_dir} not found in {REMOTE_ROOT_PREFIX}/manifest.json")
     max_train_shards = int((dataset_entry.get("stats") or {}).get("files_train"))
+    train_shards = resolve_train_shards(args, max_train_shards)
     val_shards = int((dataset_entry.get("stats") or {}).get("files_val"))
-    if train_shards > max_train_shards:
-        raise ValueError(
-            f"{args.variant} only has {max_train_shards} training shards on {REPO_ID}, requested {train_shards}"
-        )
     tokenizer_name = dataset_entry.get("tokenizer_name")
     tokenizer_entry = next((x for x in manifest.get("tokenizers", []) if x.get("name") == tokenizer_name), None)
     if tokenizer_entry is None:

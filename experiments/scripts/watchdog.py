@@ -34,7 +34,17 @@ def _visible(manifest: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in manifest.items() if not key.startswith("_")}
 
 
-def evaluate_snapshot(snapshot: dict[str, Any], *, now_epoch: float | None = None) -> dict[str, Any]:
+def _stall_timeout_seconds(step_avg_seconds: float, train_log_every: int) -> float:
+    expected_log_gap = step_avg_seconds * max(train_log_every, 1)
+    return max(60.0, expected_log_gap * 3.0)
+
+
+def evaluate_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    now_epoch: float | None = None,
+    train_log_every: int = 1,
+) -> dict[str, Any]:
     now_epoch = now_epoch or time.time()
     lines = [str(line) for line in snapshot.get("lines", []) if str(line).strip()]
     last_train_step: int | None = None
@@ -80,11 +90,13 @@ def evaluate_snapshot(snapshot: dict[str, Any], *, now_epoch: float | None = Non
     mtime_epoch = snapshot.get("mtime_epoch")
     if mtime_epoch is not None and step_avg_seconds is not None:
         staleness_seconds = max(0.0, now_epoch - float(mtime_epoch))
-        if staleness_seconds > (step_avg_seconds * 3.0):
+        stall_timeout_seconds = _stall_timeout_seconds(step_avg_seconds, train_log_every)
+        if staleness_seconds > stall_timeout_seconds:
             return {
                 "triggered": True,
                 "failure_reason": "stalled",
                 "staleness_seconds": round(staleness_seconds, 1),
+                "stall_timeout_seconds": round(stall_timeout_seconds, 1),
             }
 
     return {
@@ -97,7 +109,12 @@ def evaluate_snapshot(snapshot: dict[str, Any], *, now_epoch: float | None = Non
 
 def check_watchdog(manifest: dict[str, Any]) -> dict[str, Any]:
     snapshot = remote_log_snapshot(manifest, lines=50)
-    outcome = evaluate_snapshot(snapshot)
+    resolved_env = manifest.get("resolved_env", {})
+    try:
+        train_log_every = int(resolved_env.get("TRAIN_LOG_EVERY", 200))
+    except (TypeError, ValueError):
+        train_log_every = 200
+    outcome = evaluate_snapshot(snapshot, train_log_every=train_log_every)
     manifest["last_log_line"] = snapshot.get("last_line")
     manifest["last_log_update_epoch"] = outcome.get("last_log_update_epoch") or snapshot.get("mtime_epoch")
     manifest["estimated_cost"] = manifest.get("estimated_cost")

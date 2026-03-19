@@ -1,0 +1,20 @@
+extends: baseline.yaml
+
+name: phase0_e01_baseline_p1
+description: "Two-seed P1 baseline control calibration on 1xH100"
+hypothesis_id: "phase0-baseline-p1"
+group: "phase0-control"
+notes: "Calibrate matched P1 spread before E02."
+
+env:
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+
+sweep:
+  type: grid
+  params:
+    SEED: ["1337", "2024"]
+
+naming: "phase0_e01_seed{SEED}"
