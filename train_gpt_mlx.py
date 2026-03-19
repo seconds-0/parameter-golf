@@ -786,6 +786,7 @@ def eval_val(
         y = mx.array(y_np, dtype=mx.int32)
         chunk_token_count = float(y.size)
         total_loss = total_loss + compiled_loss(x, y).astype(mx.float32) * chunk_token_count
+        mx.eval(total_loss)
         prev_ids = x_np.reshape(-1)
         tgt_ids = y_np.reshape(-1)
         bytes_np = base_bytes_lut[tgt_ids].astype(np.int16, copy=True)
@@ -1025,9 +1026,13 @@ def main() -> None:
 
         grads = tree_unflatten(list(accum.items()))
         grads = clip_grad_tree(grads, args.grad_clip_norm)
-        train_loss_value = float(train_loss.item())
         opt.step(model, grads, step=step, lr_mul=lr_mul)
-        mx.synchronize()
+        # Evaluate the full training state to prevent unbounded lazy graph growth.
+        # Using mx.synchronize() here is insufficient — it only syncs the stream
+        # without materializing unevaluated state, causing cross-step graph buildup
+        # that can trigger Metal/kernel panics (MLX issues #3186, #3256).
+        mx.eval(model.state, opt.muon.buffers, opt.adam_embed.state, opt.adam_scalar.state)
+        train_loss_value = float(train_loss.item())
 
         step_ms = 1000.0 * (time.perf_counter() - step_t0)
         approx_train_time_ms = train_time_ms + 1000.0 * (time.perf_counter() - t0)
