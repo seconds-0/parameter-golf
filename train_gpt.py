@@ -27,6 +27,11 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+# Optional wandb integration: set WANDB_PROJECT env var to enable
+_WANDB_PROJECT = os.environ.get("WANDB_PROJECT")
+if _WANDB_PROJECT:
+    import wandb
+
 # -----------------------------
 # HYPERPARAMETERS
 # -----------------------------
@@ -909,6 +914,11 @@ def main() -> None:
     )
     log0(f"seed:{args.seed}")
 
+    if _WANDB_PROJECT and master_process:
+        wandb.init(project=_WANDB_PROJECT, name=args.run_id, config={
+            k: getattr(args, k) for k in vars(args) if not k.startswith("_")
+        })
+
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
     # -----------------------------
@@ -993,6 +1003,8 @@ def main() -> None:
                 f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
                 f"train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms"
             )
+            if _WANDB_PROJECT and master_process:
+                wandb.log({"val_loss": val_loss, "val_bpb": val_bpb}, step=step)
             torch.cuda.synchronize()
             t0 = time.perf_counter()
 
@@ -1044,6 +1056,8 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
+            if _WANDB_PROJECT and master_process:
+                wandb.log({"train_loss": train_loss.item(), "step_avg_ms": approx_training_time_ms / step}, step=step)
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
@@ -1117,6 +1131,12 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+
+    if _WANDB_PROJECT and master_process:
+        wandb.log({"final_val_loss": q_val_loss, "final_val_bpb": q_val_bpb,
+                    "model_bytes_int8_zlib": quant_file_bytes,
+                    "total_submission_bytes": quant_file_bytes + code_bytes})
+        wandb.finish()
 
     if distributed:
         dist.destroy_process_group()
