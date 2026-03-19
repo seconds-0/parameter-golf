@@ -1,4 +1,4 @@
-PYTHON ?= python3.11
+PYTHON ?= python3
 LAUNCH := $(PYTHON) experiments/scripts/launch.py
 VALIDATE := $(PYTHON) experiments/scripts/validate_config.py
 

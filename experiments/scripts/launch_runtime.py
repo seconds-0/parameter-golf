@@ -36,7 +36,7 @@ def run_cmd(cmd: list[str], *, capture: bool = False, check: bool = True) -> sub
 
 
 def ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run_cmd(["ssh", host, command], capture=capture, check=check)
+    return run_cmd(["ssh", "-o", "ConnectTimeout=30", host, command], capture=capture, check=check)
 
 
 def scp_from(host: str, remote_path: str, local_path: Path) -> bool:

@@ -73,6 +73,13 @@ def summarize_costs(manifests: list[dict[str, Any]], *, budget: float | None) ->
             cost = float(manifest.get("estimated_cost") or 0.0)
         except (TypeError, ValueError):
             cost = 0.0
+        # Compute live cost for running experiments
+        if manifest.get("status") == "running" and manifest.get("start_time_epoch") and manifest.get("hourly_rate"):
+            try:
+                elapsed_hours = max(0.0, now - float(manifest["start_time_epoch"])) / 3600.0
+                cost = round(elapsed_hours * float(manifest["hourly_rate"]), 4)
+            except (TypeError, ValueError):
+                pass
         total += cost
         status = str(manifest.get("status") or "unknown")
         host = str(manifest.get("host_name") or manifest.get("host") or "unknown")

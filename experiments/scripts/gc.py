@@ -79,7 +79,8 @@ def run_gc(host_or_machine: str, *, older_than: str, dry_run: bool) -> dict[str,
             continue
         deletable.append({**row, "run_id": run_id})
     if deletable and not dry_run:
-        joined = " ".join(f"'{entry['path']}'" for entry in deletable)
+        import shlex
+        joined = " ".join(shlex.quote(str(entry["path"])) for entry in deletable)
         proc = ssh_capture(host, f"rm -rf {joined}")
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "remote delete failed")

@@ -96,7 +96,7 @@ def evaluate_snapshot(snapshot: dict[str, Any], *, now_epoch: float | None = Non
 
 
 def check_watchdog(manifest: dict[str, Any]) -> dict[str, Any]:
-    snapshot = remote_log_snapshot(manifest, lines=20)
+    snapshot = remote_log_snapshot(manifest, lines=50)
     outcome = evaluate_snapshot(snapshot)
     manifest["last_log_line"] = snapshot.get("last_line")
     manifest["last_log_update_epoch"] = outcome.get("last_log_update_epoch") or snapshot.get("mtime_epoch")
