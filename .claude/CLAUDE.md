@@ -70,6 +70,16 @@ Safe settings for M4 Pro 48GB: `TRAIN_BATCH_TOKENS=8192-65536`, `VAL_BATCH_SIZE=
 For quick smoke tests: `VAL_LOSS_EVERY=0` skips periodic validation (final val is slow at tiny batch sizes).
 All official training runs still go to cloud GPUs (Vast.ai or Prime Intellect).
 
+## Current State — READ ON RESUME
+
+**Start here:** `docs/tracker.md` — master progress tracker with all work items and status.
+
+- **Strategy**: `docs/experiment_plan_prd.md` — full experiment plan (proxy design, sequential halving, 23 experiments)
+- **Track details**: `docs/tracks/track_{a-f}_*.md` — per-track thesis, experiments, decision rules, learnings
+- **Key metrics**: `Δpq` (post-roundtrip delta vs baseline, negative=better), `qgap` (post-quant minus pre-quant, smaller=better)
+- **Rule**: Never promote on pre-quant improvement alone. Export retention is the battlefield.
+- **Budget**: Conservative plan ~12-15 H100-hours. No grids. Sequential halving only.
+
 ## Git Setup
 - `origin`: `seconds-0/parameter-golf` (our fork)
 - `upstream`: `openai/parameter-golf` (official repo)
