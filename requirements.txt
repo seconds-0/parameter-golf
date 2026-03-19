@@ -1,4 +1,6 @@
 numpy
+PyYAML
+pytest
 tqdm
 torch==2.10
 huggingface-hub

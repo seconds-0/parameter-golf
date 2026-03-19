@@ -1,0 +1,13 @@
+machines:
+  vast-8xh100:
+    host: "root@<ip>"
+    remote_dir: /workspace/parameter-golf
+    gpus: 8
+    hourly_rate: 20.0
+    labels: [h100, 8gpu]
+  prime-8xh100:
+    host: "user@<ip>"
+    remote_dir: /home/user/parameter-golf
+    gpus: 8
+    hourly_rate: 18.0
+    labels: [h100, 8gpu]

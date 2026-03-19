@@ -1,0 +1,29 @@
+# Sweep: Matrix LR and Scalar LR grid search
+# Tests how sensitive the model is to optimizer learning rates.
+# Expected runtime: ~2.5 hours (15 configs x 10 min each)
+
+name: sweep_matrix_lr
+description: "Grid sweep over Muon matrix LR and scalar LR"
+
+base_env:
+  VOCAB_SIZE: "1024"
+  NUM_LAYERS: "9"
+  MODEL_DIM: "512"
+  NUM_HEADS: "8"
+  NUM_KV_HEADS: "4"
+  MLP_MULT: "2"
+  TIE_EMBEDDINGS: "1"
+  TRAIN_BATCH_TOKENS: "524288"
+  TRAIN_SEQ_LEN: "1024"
+  MAX_WALLCLOCK_SECONDS: "600"
+  TRAIN_LOG_EVERY: "50"
+  VAL_LOSS_EVERY: "200"
+  SEED: "1337"
+
+sweep:
+  type: grid
+  params:
+    MATRIX_LR: ["0.02", "0.03", "0.04", "0.05", "0.06"]
+    SCALAR_LR: ["0.03", "0.04", "0.05"]
+
+naming: "lr_mat{MATRIX_LR}_sc{SCALAR_LR}"

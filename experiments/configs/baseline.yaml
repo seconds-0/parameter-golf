@@ -1,0 +1,21 @@
+# Reproduce the NaiveBaseline record (1.2244 val_bpb)
+# This is the control run to verify our infrastructure matches the official baseline.
+
+name: baseline_repro
+description: "Exact reproduction of NaiveBaseline record on 8xH100"
+
+env:
+  VOCAB_SIZE: "1024"
+  NUM_LAYERS: "9"
+  MODEL_DIM: "512"
+  NUM_HEADS: "8"
+  NUM_KV_HEADS: "4"
+  MLP_MULT: "2"
+  TIE_EMBEDDINGS: "1"
+  TIED_EMBED_LR: "0.05"
+  TRAIN_BATCH_TOKENS: "524288"
+  TRAIN_SEQ_LEN: "1024"
+  MAX_WALLCLOCK_SECONDS: "600"
+  TRAIN_LOG_EVERY: "50"
+  VAL_LOSS_EVERY: "200"
+  SEED: "1337"
