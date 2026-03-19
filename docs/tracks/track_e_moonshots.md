@@ -26,7 +26,10 @@ Replace `torch.relu(self.fc(x)).square()` with SwiGLU: `silu(gate(x)) * up(x)`.
 
 **Parameter budget trade-off:**
 - Current MLP: 2 matrices (fc + proj) = 1,048,576 params/layer at 2x expansion
-- SwiGLU MLP: 3 matrices (gate + up + down). To match params: hidden=704 (vs current 1024)
+- SwiGLU MLP: 3 matrices (gate + up + down). At hidden=704: 1,081,344 params/layer (+32,768 each)
+- 9 layers × 32,768 extra params = ~288KB added, **exceeding** the baseline's 138KB artifact slack
+- **Standalone test:** use hidden=640 (983,040 params/layer, saves ~65K params/layer vs baseline) to fit 16MB
+- **With layer sharing (E26):** can use hidden=704 or larger since sharing frees MB-scale budget
 - Alternative: accept param increase, reduce layers from 9 to ~7 to fit 16MB
 
 **Kill:** Worse than baseline by ≥0.004 Δpq at P1.

@@ -7,6 +7,7 @@ In this small-vocab tied-embedding regime, the embedding matrix is unusually loa
 - **E10**: Tied-embed LR star on tokenizer winner (3-point, ~0.3 H100-hrs)
 - **E11**: Matrix/scalar LR star on tokenizer winner (3-point, ~0.3 H100-hrs)
 - **E12**: Embedding norm penalty A/B
+- **E23**: EMA weight averaging at export (decay sweep: 0.999, 0.9999) — inspired by [Q Labs 10x blog](../references/qlabs_10x_data_efficiency.md). ~20 lines of code. Maintain shadow EMA weights during training, swap in at export time. Targets qgap reduction via smoother weights. Kill if qgap doesn't improve by ≥10% or val_bpb regresses by >0.002. **Unblocked** — depends only on E02, uses in-process roundtrip (not X-05).
 
 ## Key Metrics
 - Δpq (post-roundtrip delta vs baseline)

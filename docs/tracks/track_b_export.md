@@ -9,7 +9,7 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 - **E13**: Clamp-aware row-outlier regularizer
 - **E14**: QAT-lite on selected weights
 - **E15**: Best exporter + best export-aware trick composed
-- **E24**: Weight decay / L2 penalty for export retention (sweep 0.1–1.6) — inspired by [Q Labs 10x blog](../references/qlabs_10x_data_efficiency.md)
+- **E24**: Weight decay / L2 penalty for export retention (sweep 0.1–1.6) — inspired by [Q Labs 10x blog](../references/qlabs_10x_data_efficiency.md). **Unblocked** — depends only on E02, uses in-process roundtrip (not X-05). Kill if pre-quant val_bpb regresses by >0.005 without compensating qgap improvement.
 
 ## Key Metrics
 - Δpq (post-roundtrip delta vs baseline) — primary ranking metric
