@@ -1,22 +1,60 @@
-# Track E: Parameter Sharing & Recurrence Moonshots
+# Track E: Architecture Experiments (Layer Sharing, Activation, Combos)
 
 ## Thesis
-Share parameters across layer groups and re-spend saved bytes into width or tokenizer slack. High variance, but has first-principles connection to the stored-byte constraint. Only attempt after Tracks A-D plateau.
+Share parameters across layer groups and re-spend saved bytes into width, better activations, or depth. Originally speculative, now backed by external evidence: [Q Labs achieved 10x data efficiency](../references/qlabs_10x_data_efficiency.md) using layer looping, SwiGLU, and EMA on the NanoGPT Slowrun. Their looping alone contributed ~1.2x improvement (8.88x → 10.05x with EMA).
 
 ## Experiments
-- **E18**: Grouped layer sharing moonshot
+
+### E18: Layer Sharing (concrete design)
+Share parameters across layer groups, looping a subset of layers to create more effective depth with fewer stored parameters.
+
+**Current baseline:** 9 unique layers, ~15.86MB compressed, 138KB artifact slack.
+
+**Variants to test:**
+- **A:** 6 unique layers, loop middle 3 ×2 → 9 effective layers. Saves ~1.7MB → reinvest in wider dim (512→576 or 640).
+- **B:** 5 unique layers, loop ×2 → 10 effective layers. More savings, deeper effective model.
+- **C:** 4 unique layers, loop ×3 → 12 effective layers. Aggressive. Most savings, biggest risk.
+
+**Implementation notes:**
+- Q Labs looped layers 15-24 ×4 in their 30-layer model (33% unique, 400% effective depth).
+- They found "it is important not to loop the last few layers" — keep first and last layers unique.
+- U-Net skip connections interact with looping: skip weights may need adjustment since encoder/decoder split changes.
+- Muon optimizer receives gradients through shared weights multiple times per forward pass. May need gradient scaling or adjusted learning rate.
+
+### E25: SwiGLU Activation
+Replace `torch.relu(self.fc(x)).square()` with SwiGLU: `silu(gate(x)) * up(x)`.
+
+**Parameter budget trade-off:**
+- Current MLP: 2 matrices (fc + proj) = 1,048,576 params/layer at 2x expansion
+- SwiGLU MLP: 3 matrices (gate + up + down). To match params: hidden=704 (vs current 1024)
+- Alternative: accept param increase, reduce layers from 9 to ~7 to fit 16MB
+
+**Kill:** Worse than baseline by ≥0.004 Δpq at P1.
+
+### E26: Layer Sharing + SwiGLU Combo
+Best layer sharing variant + SwiGLU. The freed artifact budget from sharing absorbs SwiGLU's extra gate matrix.
+
+**Example config:** 6 unique layers with SwiGLU (hidden=704), looped to 9 effective. Saves layer params, spends on better activation quality.
+
+Depends on E18 and E25 results to pick best variants.
 
 ## Key Metrics
-- Δpq, qgap, artifact slack (especially freed bytes)
-- Step time (sharing may be faster or slower depending on implementation)
+- Δpq, qgap, artifact slack (especially freed bytes from sharing)
+- Step time (looping adds compute; SwiGLU is roughly same cost as ReLU²)
+- Effective depth vs unique parameters ratio
 
 ## Decision Rules
-- Promote only if it beats baseline outright OR frees ≥300kB while staying within 0.003 Δpq
-- Kill fast if neither condition met
-- This is explicitly a "try once, move on" track
+- Promote if it beats baseline outright OR frees ≥300kB while staying within 0.003 Δpq
+- E18: test variant A first (least aggressive), promote to P2 if promising
+- E25: standalone test before combining with E18
+- E26: only if both E18 and E25 show promise independently
+- Kill fast if neither quality nor artifact-savings condition is met
+
+## External Evidence
+- [Q Labs 10x Data Efficiency](../references/qlabs_10x_data_efficiency.md) — layer looping, SwiGLU, and other architectural innovations
 
 ## Status
-Not started. Low priority until Tracks A-D exhaust their value.
+Not started. E18/E25 depend only on E02 (baseline reproduction, complete). Can begin any time.
 
 ## Learnings
 (Updated as experiments complete)

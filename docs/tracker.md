@@ -39,6 +39,7 @@
 |--------|-----|-------------|-------|-------|---------|
 | [ ] | E03 | Exporter clip-percentile star (sweep INT8_CLIP_PERCENTILE) | Export+P1 | B | E02, P-02, X-05 |
 | [ ] | E04 | Keep-float threshold star (sweep INT8_KEEP_FLOAT_MAX_NUMEL) | Export+P1 | B | E02, P-02, X-05 |
+| [ ] | E23 | EMA weight averaging at export (decay sweep: 0.999, 0.9999) | P1 | C | E02 |
 
 ## Phase 2: Tokenizer First, Then Recipe
 
@@ -60,6 +61,7 @@
 | [ ] | E13 | Clamp-aware row-outlier regularizer | P1→P2 | B | E03..E04 |
 | [ ] | E14 | QAT-lite on selected weights | P1 | B | E03..E04 |
 | [ ] | E15 | Best exporter + best export-aware trick composed | P2 | B | E13 or E14 |
+| [ ] | E24 | Weight decay / L2 penalty for export retention (sweep 0.1–1.6) | P1→P2 | B | E02 |
 
 ## Phase 4: Byte-Efficient Capacity Trades
 
@@ -67,7 +69,9 @@
 |--------|-----|-------------|-------|-------|---------|
 | [ ] | E16 | KV-head rebudget (4→2) | P1+P3 | D | E02 |
 | [ ] | E17 | KV-head + width rebudget | P1→P3→P2 | D | E16 |
-| [ ] | E18 | Grouped layer sharing moonshot | P1 | E | E02 |
+| [ ] | E18 | Layer sharing (6/5/4 unique layers looped to 9-12 effective) | P1 | E | E02 |
+| [ ] | E25 | SwiGLU activation replacing ReLU² (matched param budget) | P1 | E | E02 |
+| [ ] | E26 | Layer sharing + SwiGLU rebudget combo | P1→P2 | E | E18, E25 |
 
 ## Phase 5: Composition and Promotion
 
