@@ -10,6 +10,7 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 - **E14**: QAT-lite on selected weights
 - **E15**: Best exporter + best export-aware trick composed
 - **E24**: Weight decay for export retention — test both **fixed L2** (sweep 0.1–1.6, from [Q Labs](../references/qlabs_10x_data_efficiency.md)) and **cautious gated decay** (from [NanoGPT speedrun record 44](../references/nanogpt_speedrun_techniques.md#12-cautious-weight-decay)). Cautious variant only applies decay when weight and gradient are aligned, avoiding counterproductive updates. **Unblocked** — depends only on E02, uses in-process roundtrip (not X-05). Kill if pre-quant val_bpb regresses by >0.005 without compensating qgap improvement.
+- **E33**: Range Regularization R² — penalizes the range (max-min) of weight values per row/tensor during training, tightening distributions for better int8 quantization. Distinct from E24 (targets magnitude) and E13 (targets row outliers). R² targets the distribution shape itself. Optionally bundle with **KURE** (kurtosis regularization, arXiv:2602.03614) which penalizes spiky distributions. Ref: [small model landscape](../references/small_model_optimization_landscape.md#2-range-regularization-r-for-quantization). **Unblocked** — depends only on E02. Kill if pre-quant regresses >0.004 without qgap improvement.
 
 ## Key Metrics
 - Δpq (post-roundtrip delta vs baseline) — primary ranking metric
@@ -25,7 +26,7 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 - E14: promote if Δpq ≤ -0.004 and step slowdown <12%
 
 ## Status
-Blocked on fresh-process replay correctness. `P-02` is complete and `E02` passed on `baseline_repro-20260319-093041-82dade88`, but fresh 1xH100 replays of saved `final_model.pt` artifacts still do not reproduce the trusted in-run metrics. Multiple fresh instrumented runs proved the in-trainer reload path is healthy, and persisting RoPE `inv_freq` did not fix standalone replay, so `E03` and `E04` remain paused until the fresh-process reconstruction path is explained.
+Blocked on fresh-process replay correctness. `P-02` is complete and `E02` passed on `baseline_repro-20260319-093041-82dade88`, but fresh 1xH100 replays of saved `final_model.pt` artifacts still do not reproduce the trusted in-run metrics. Multiple fresh instrumented runs proved the in-trainer reload path is healthy, and persisting RoPE `inv_freq` did not fix standalone replay, so `E03` and `E04` remain paused until the fresh-process reconstruction path is explained by the new block-0 cache probes.
 
 ## Learnings
 - Exporter controls currently exposed via env vars: `INT8_CLIP_PERCENTILE`, `INT8_KEEP_FLOAT_MAX_NUMEL`, `CONTROL_TENSOR_NAME_PATTERNS`, and `INT8_KEEP_FLOAT_FP32_NAME_PATTERNS`
@@ -40,3 +41,7 @@ Blocked on fresh-process replay correctness. `P-02` is complete and `E02` passed
 - RoPE `inv_freq` is now persisted in `final_model.pt`, and that still did not move the fresh-process replay failure, so the next suspect is not “missing RoPE basis in state_dict”; it is a deeper fresh-process model reconstruction or snapshot-import mismatch
 - The DIAG run `proxy_p1_fast-20260319-204141-603684f1` tightened that further: replay hyperparameters and loaded-model fingerprints match the trainer-side diagnostics exactly, and the first deterministic forward mismatch appears at `enc0`
 - Fresh eager replay and fresh compiled replay also match each other exactly on that same checkpoint, so Track B is specifically blocked on hidden same-process runtime state from the trained module, not on missing replay config or missing replay compilation
+- Replay tooling now emits deep block-0 DIAG lines for the raw checkpoint path, including cache-cleared and cache-prewarmed variants, and `experiments/scripts/compare_diag.py` can diff them against trainer logs to isolate the first divergent field automatically
+- The proof run `proxy_p1_fast-20260319-230602-1649fc2b` answered that question: clearing the trainer-side rotary caches makes the in-process raw-checkpoint path fall directly into the standalone replay regime, and replay matches the cache-cleared trainer block-0 payload exactly
+- Track B is therefore blocked on one concrete model-side defect, not on the exporter utility: RoPE cache reconstruction is precision-sensitive, and rebuilt tables differ enough from the live cached tables to move prequant `val_bpb` from `1.40158006` to `1.79098528`
+- The next unblocker is now a Rotary fix plus one proof rerun: build RoPE caches from a stable fp32 basis, re-verify that trainer reload and fresh-process replay both return to the healthy prequant path, then reopen `E03` and `E04`

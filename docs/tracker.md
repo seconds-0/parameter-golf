@@ -42,6 +42,8 @@
 | [ ] | E23 | EMA weight averaging at export (decay sweep: 0.999, 0.9999) | P1 | C | E02 |
 | [ ] | E27 | Document-aligned batching (respect EOS boundaries in data loader) | P1 | F | E02 |
 | [ ] | E28 | Asymmetric logit rescale (directional scaling beyond softcap) | P1 | C | E02 |
+| [ ] | E32 | WSD LR schedule (Warmup-Stable-Decay replacing cosine warmdown) | P1 | C | E02 |
+| [ ] | E35 | Higher β₂ during cooldown (0.97-0.99 in decay phase) | P1 | C | E02 |
 
 ## Phase 2: Tokenizer First, Then Recipe
 
@@ -57,6 +59,7 @@
 | [ ] | E12 | Embedding norm penalty A/B | P1→P2 | C | E09 |
 | [ ] | E29 | Value embeddings with gating (mix input embeds into attention values) | P1 | E | E02 |
 | [ ] | E30 | Batch size schedule (small→large over training) | P1 | C | E02 |
+| [ ] | E34 | Turbo-Muon (AOL spectral preconditioning for faster ortho) | P1 | C | E02 |
 
 ## Phase 3: Export-Aware Training
 
@@ -66,6 +69,7 @@
 | [ ] | E14 | QAT-lite on selected weights | P1 | B | E03..E04 |
 | [ ] | E15 | Best exporter + best export-aware trick composed | P2 | B | E13 or E14 |
 | [ ] | E24 | Weight decay for export retention (cautious gated + fixed, sweep 0.1–1.6) | P1→P2 | B | E02 |
+| [ ] | E33 | Range Regularization R² for quantization robustness (distribution shape) | P1→P2 | B | E02 |
 
 ## Phase 4: Byte-Efficient Capacity Trades
 
@@ -139,4 +143,10 @@
 - A fresh DIAG run on `proxy_p1_fast-20260319-204141-603684f1` narrowed the bug again: `train_hparams == replay_hparams` and `train_reloaded == replay_loaded`, so the mismatch is not config, tensor values, dtypes, or serialized buffers
 - The first deterministic forward mismatch is at `enc0`, right after the shared embedding path: `emb` matches exactly, but `enc0` diverges (`-0.04076016|3.49975801` vs `-0.04143078|3.48918056`)
 - A fresh eager model and a fresh `torch.compile(...)`d model produce the same replay-side forward trace, so the active blocker is not “replay forgot to compile”; it is hidden same-process runtime state inside the first block path
-- The next work in sequence is now a focused block-0/runtime-state bughunt: inspect non-serialized/plain attrs on the first block path, especially `Rotary` caches and any compile-era module state that survives inside the trainer process but is absent in fresh replay
+- The bughunt surface is now deeper and symmetric on both sides: trainer and replay logs emit block-0 DIAG probes for `attn_norm`, `q/k` pre/post RoPE, rotary cache state, `attn_out`, `mlp_out`, and `enc0`, plus cache-cleared and cache-prewarmed variants
+- A small helper now exists at `experiments/scripts/compare_diag.py` to diff `DIAG:*` lines and report the first divergent field across trainer and replay logs
+- Local verification is green after this instrumentation tranche: `make test` passes with `55` tests, `py_compile` passes for the touched scripts, and `make validate CONFIG=experiments/configs/proxy_p1_fast.yaml` still passes
+- The fresh proof run `proxy_p1_fast-20260319-230602-1649fc2b` produced the first decisive root-cause evidence: live final prequant stayed healthy at `1.40158006`, but resetting the rotary caches before raw-checkpoint eval made the in-process reload jump to `1.79098528`, with block-0 DIAG changing immediately at `cos/sin`, `q_post_rope`, `attn_out`, and `enc0`
+- Fresh-process replay now matches that cache-cleared trainer path exactly from `cos/sin` onward: `export_eval` landed at `prequant_val_bpb=1.79098528` and `postquant_val_bpb=1.79751456`, and the block-0 payloads for trainer `train_reloaded_block0_cache_cleared` and replay `replay_loaded_block0` match field-for-field except that replay sees the cache already populated by its first probe
+- The numeric clue is specific: the “good” live rotary cache has `cos/sin` summary `0.27844450 / 0.16043766`, while a rebuilt cache lands at `0.27934727 / 0.16214436`; that rebuilt value matches the standalone replay exactly and also matches a local bf16 RoPE-table reconstruction much more closely than the live cache does
+- The next work in sequence is now a tight Rotary precision fix, not broader replay archaeology: make RoPE cache construction use a stable fp32 basis/rebuild path, add a regression that compares live-vs-rebuilt rotary tables, then rerun one `1xH100` proof to confirm `reloaded_prequant_exact` and standalone replay both return to the `~1.4016` regime

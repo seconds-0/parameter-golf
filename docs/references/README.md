@@ -6,3 +6,4 @@ Collected blog posts, papers, and write-ups with techniques potentially applicab
 |------|--------|-----------|---------------------|
 | [qlabs_10x_data_efficiency.md](qlabs_10x_data_efficiency.md) | [qlabs.sh/10x](https://qlabs.sh/10x) | EMA, heavy weight decay, SwiGLU, layer looping | E23, E24, E25, E26, E18 enhanced |
 | [nanogpt_speedrun_techniques.md](nanogpt_speedrun_techniques.md) | [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) | 50+ techniques across 77 records, 4-tier classification | E24 enhanced, E27, E28, E29, E30, E31 |
+| [small_model_optimization_landscape.md](small_model_optimization_landscape.md) | MiniCPM, Qwen, DeepSeek, SmolLM3, QAT papers | WSD schedule, R² regularization, Turbo-Muon, β₂ cooldown | E32, E33, E34, E35 |
