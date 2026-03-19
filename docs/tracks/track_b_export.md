@@ -9,7 +9,7 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 - **E13**: Clamp-aware row-outlier regularizer
 - **E14**: QAT-lite on selected weights
 - **E15**: Best exporter + best export-aware trick composed
-- **E24**: Weight decay / L2 penalty for export retention (sweep 0.1–1.6) — inspired by [Q Labs 10x blog](../references/qlabs_10x_data_efficiency.md). **Unblocked** — depends only on E02, uses in-process roundtrip (not X-05). Kill if pre-quant val_bpb regresses by >0.005 without compensating qgap improvement.
+- **E24**: Weight decay for export retention — test both **fixed L2** (sweep 0.1–1.6, from [Q Labs](../references/qlabs_10x_data_efficiency.md)) and **cautious gated decay** (from [NanoGPT speedrun record 44](../references/nanogpt_speedrun_techniques.md#12-cautious-weight-decay)). Cautious variant only applies decay when weight and gradient are aligned, avoiding counterproductive updates. **Unblocked** — depends only on E02, uses in-process roundtrip (not X-05). Kill if pre-quant val_bpb regresses by >0.005 without compensating qgap improvement.
 
 ## Key Metrics
 - Δpq (post-roundtrip delta vs baseline) — primary ranking metric
@@ -38,3 +38,5 @@ Blocked on fresh-process replay correctness. `P-02` is complete and `E02` passed
 - But the standalone replay path is still broken on that same fresh checkpoint: `final_model.export_eval.json` replayed it at `1.78986763/1.79694755`, so the remaining blocker is now specifically a fresh-process reconstruction/export-eval bug rather than a raw checkpoint save bug
 - A second fresh proof run on `proxy_p1_fast-20260319-192237-39db664f` reproduced the same shape of failure directly on the original remote artifact: trainer-side reload stayed tight at `1.40549047/1.40989139`, while standalone replay still came back at `1.78922077/1.79489698`
 - RoPE `inv_freq` is now persisted in `final_model.pt`, and that still did not move the fresh-process replay failure, so the next suspect is not “missing RoPE basis in state_dict”; it is a deeper fresh-process model reconstruction or snapshot-import mismatch
+- The DIAG run `proxy_p1_fast-20260319-204141-603684f1` tightened that further: replay hyperparameters and loaded-model fingerprints match the trainer-side diagnostics exactly, and the first deterministic forward mismatch appears at `enc0`
+- Fresh eager replay and fresh compiled replay also match each other exactly on that same checkpoint, so Track B is specifically blocked on hidden same-process runtime state from the trained module, not on missing replay config or missing replay compilation

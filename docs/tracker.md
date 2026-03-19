@@ -40,6 +40,8 @@
 | [ ] | E03 | Exporter clip-percentile star (sweep INT8_CLIP_PERCENTILE) | Export+P1 | B | E02, P-02, X-05 |
 | [ ] | E04 | Keep-float threshold star (sweep INT8_KEEP_FLOAT_MAX_NUMEL) | Export+P1 | B | E02, P-02, X-05 |
 | [ ] | E23 | EMA weight averaging at export (decay sweep: 0.999, 0.9999) | P1 | C | E02 |
+| [ ] | E27 | Document-aligned batching (respect EOS boundaries in data loader) | P1 | F | E02 |
+| [ ] | E28 | Asymmetric logit rescale (directional scaling beyond softcap) | P1 | C | E02 |
 
 ## Phase 2: Tokenizer First, Then Recipe
 
@@ -53,6 +55,8 @@
 | [ ] | E10 | Tied-embed LR star on tokenizer winner | P1 | C | E09 |
 | [ ] | E11 | Matrix/scalar LR star on tokenizer winner | P1 | C | E09 |
 | [ ] | E12 | Embedding norm penalty A/B | P1→P2 | C | E09 |
+| [ ] | E29 | Value embeddings with gating (mix input embeds into attention values) | P1 | E | E02 |
+| [ ] | E30 | Batch size schedule (small→large over training) | P1 | C | E02 |
 
 ## Phase 3: Export-Aware Training
 
@@ -61,7 +65,7 @@
 | [ ] | E13 | Clamp-aware row-outlier regularizer | P1→P2 | B | E03..E04 |
 | [ ] | E14 | QAT-lite on selected weights | P1 | B | E03..E04 |
 | [ ] | E15 | Best exporter + best export-aware trick composed | P2 | B | E13 or E14 |
-| [ ] | E24 | Weight decay / L2 penalty for export retention (sweep 0.1–1.6) | P1→P2 | B | E02 |
+| [ ] | E24 | Weight decay for export retention (cautious gated + fixed, sweep 0.1–1.6) | P1→P2 | B | E02 |
 
 ## Phase 4: Byte-Efficient Capacity Trades
 
@@ -72,6 +76,7 @@
 | [ ] | E18 | Layer sharing (6/5/4 unique layers looped to 9-12 effective) | P1 | E | E02 |
 | [ ] | E25 | SwiGLU activation replacing ReLU² (matched param budget) | P1 | E | E02 |
 | [ ] | E26 | Layer sharing + SwiGLU rebudget combo | P1→P2 | E | E18, E25 |
+| [ ] | E31 | Multi-token prediction (training-only extra heads, discard at export) | P1→P2 | E | E02 |
 
 ## Phase 5: Composition and Promotion
 
@@ -131,4 +136,7 @@
 - A second fresh instrumented P1 proof run succeeded on `proxy_p1_fast-20260319-192237-39db664f`: in-trainer replay trust was again good, with `uncompiled_check_delta_bpb=+0.00056740`, `checkpoint_save_verify_max_abs_diff=0.0`, `reloaded_prequant_delta_bpb=+0.00056740`, and `reloaded_postquant_delta_bpb=+0.00057580`
 - The checkpoint now explicitly serializes RoPE `inv_freq`, so the remaining mismatch is no longer explainable as “forward-relevant buffers were missing from state_dict`
 - Even on the original remote artifact, standalone fresh-process replay is still badly wrong: `final_model.export_eval.json` landed at `prequant_val_bpb=1.78922077` and `postquant_val_bpb=1.79489698` instead of the trainer-side `1.40549047/1.40989139`
-- The next work in sequence is now a focused fresh-process reconstruction bughunt inside `export_eval.py` and the trainer snapshot import path: explain why a fresh process built from the same checkpoint, config, tokenizer path, and dataset path still diverges while the in-process trainer reload stays within about `0.0006`
+- A fresh DIAG run on `proxy_p1_fast-20260319-204141-603684f1` narrowed the bug again: `train_hparams == replay_hparams` and `train_reloaded == replay_loaded`, so the mismatch is not config, tensor values, dtypes, or serialized buffers
+- The first deterministic forward mismatch is at `enc0`, right after the shared embedding path: `emb` matches exactly, but `enc0` diverges (`-0.04076016|3.49975801` vs `-0.04143078|3.48918056`)
+- A fresh eager model and a fresh `torch.compile(...)`d model produce the same replay-side forward trace, so the active blocker is not “replay forgot to compile”; it is hidden same-process runtime state inside the first block path
+- The next work in sequence is now a focused block-0/runtime-state bughunt: inspect non-serialized/plain attrs on the first block path, especially `Rotary` caches and any compile-era module state that survives inside the trainer process but is absent in fresh replay

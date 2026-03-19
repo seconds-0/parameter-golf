@@ -41,6 +41,26 @@ Best layer sharing variant + SwiGLU. The freed artifact budget from sharing abso
 
 Depends on E18 and E25 results to pick best variants.
 
+### E29: Value Embeddings with Gating
+Mix input (token) embeddings directly into attention value computations with a learned gating weight per block. Multiple speedrun records (13, 16, 22) showed progressive improvements from this technique.
+
+**Implementation:** Add a `ve_gate_w` scalar parameter per block (initialized to 0). In attention forward, compute `V = V_proj + ve_gate_w * embed_proj(tok_emb)` where `embed_proj` is a small learned projection (or the identity if dims match). The gating starts at zero (no change) and the model learns how much embedding signal to mix in.
+
+**Artifact concern:** Minimal. Gating weights are tiny control tensors kept as fp32. If using a projection, it adds `dim × kv_dim` per layer but can be omitted for a simpler variant.
+
+**Kill:** Worse than baseline by ≥0.003 Δpq at P1.
+
+### E31: Multi-Token Prediction (Training-Only)
+Predict 2+ future tokens using additional lightweight linear heads during training. Discard MTP heads at export time — they provide extra gradient signal but are not needed for inference.
+
+**Implementation:** Add 1-2 extra `nn.Linear(dim, vocab_size)` heads. During training, compute cross-entropy loss for positions t+1, t+2, etc., weighted by scheduled `mtp_weights`. At export, remove the extra heads so artifact size is unchanged.
+
+**Artifact concern:** Zero if MTP heads are discarded at export. They exist only for training signal.
+
+**Speedrun impact:** Record 34 (2.203 → 1.988 min). Uses scheduled MTP weights that fade in/out.
+
+**Kill:** If adding MTP heads slows step time by >15% without compensating quality gain, or if Δpq ≥ +0.002.
+
 ## Key Metrics
 - Δpq, qgap, artifact slack (especially freed bytes from sharing)
 - Step time (looping adds compute; SwiGLU is roughly same cost as ReLU²)

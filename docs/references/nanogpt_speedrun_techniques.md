@@ -280,17 +280,33 @@ Each technique is classified into one of four tiers:
 
 ---
 
-## Already Planned (from Q Labs Blog Analysis)
+## Experiments Created
 
-These techniques were already identified and added to the experiment plan from the Q Labs "10x Data Efficiency" blog (see `qlabs_10x_data_efficiency.md`):
+### From Q Labs Blog Analysis
+| Experiment | Technique | Phase | Source |
+|------------|-----------|-------|--------|
+| E23 | EMA weight averaging | Phase 1 | Q Labs |
+| E24 | Weight decay (fixed L2 + cautious gated) | Phase 3 | Q Labs + Speedrun #44 |
+| E25 | SwiGLU activation | Phase 4 | Q Labs |
+| E26 | Layer sharing + SwiGLU combo | Phase 4 | Q Labs |
+| E18 (enhanced) | Layer sharing / looping | Phase 4 | Q Labs |
 
-| Experiment | Technique | Phase |
-|------------|-----------|-------|
-| E23 | EMA weight averaging | Phase 1 |
-| E24 | Weight decay / L2 penalty | Phase 3 |
-| E25 | SwiGLU activation | Phase 4 |
-| E26 | Layer sharing + SwiGLU combo | Phase 4 |
-| E18 (enhanced) | Layer sharing / looping | Phase 4 |
+### From NanoGPT Speedrun Ranking (Tier 1 → Experiments)
+| Experiment | Technique | Phase | Tier 1 rank | Speedrun record |
+|------------|-----------|-------|-------------|-----------------|
+| E27 | Document-aligned batching | Phase 1 | #1 | Record 28 |
+| E28 | Asymmetric logit rescale | Phase 1 | #3 | Record 41 |
+| E29 | Value embeddings with gating | Phase 2 | #4 | Records 13,16,22 |
+| E30 | Batch size schedule | Phase 2 | #5 | Record 37 |
+| E31 | Multi-token prediction (training-only) | Phase 4 | #6 | Record 34 |
+
+### Not promoted (kept as reference)
+| Technique | Reason |
+|-----------|--------|
+| Seq length schedule | Medium complexity, uncertain gain at 1024 seq len |
+| NorMuon / Polar Express | Small speedrun delta, complex implementation |
+| Bigram hash embedding | Moderate artifact concern, needs budget from layer sharing |
+| Partitioned hyperconnections | Architecturally invasive, replaces U-Net |
 
 ---
 
@@ -323,7 +339,7 @@ These techniques were already identified and added to the experiment plan from t
 
 - **Total techniques identified:** 50+
 - **Already in our baseline:** 28
-- **Tier 1 (high relevance, not implemented):** 10
+- **Tier 1 (high relevance, not implemented):** 10 → 5 promoted to experiments (E27-E31), 1 merged into E24, 4 kept as reference
 - **Tier 2 (uncertain fit):** 9
 - **Tier 4 (not relevant):** 16
-- **Already planned from Q Labs:** 5 (E18, E23-E26)
+- **Total experiments from external research:** 10 (E18 enhanced, E23-E31)

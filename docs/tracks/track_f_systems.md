@@ -9,6 +9,7 @@ The experiment infrastructure must be trustworthy before any experimental result
 - **E00**: Baseline P0 smoke
 - **E01**: Baseline P1 control
 - **E02**: Baseline 8xH100 reproduction
+- **E27**: Document-aligned batching — align batch boundaries with EOS tokens so the model never attends across document boundaries within a sequence. Pure data loading change, zero artifact cost. Speedrun record 28 showed measurable gain. Modify `TokenStream`/`DistributedTokenLoader` to detect and respect document boundaries. Kill if val_bpb regresses by >0.002. Ref: [NanoGPT speedrun 1.6](../references/nanogpt_speedrun_techniques.md#16-document-aligned-batching). **Unblocked** — depends only on E02.
 
 ## Key Principles
 - No model conclusion is trustworthy until E02 passes (within 0.003 bpb of baseline); E00 and E01 exist only to validate the harness
@@ -42,3 +43,5 @@ Trusted for launch/measurement on the training path, but not yet trusted for sta
 - The fresh proof run `proxy_p1_fast-20260319-185044-b42cf8f0` did exactly that separation: inside the trainer, the raw checkpoint and quantized artifact stayed within about `+0.0006` bpb of the live end-of-run metrics, and the raw checkpoint save verified byte-for-byte against the live state dict
 - Replaying that same fresh checkpoint in a separate process still failed badly via `export_eval.py` (`1.78986763/1.79694755`), so the systems blocker is no longer “trainer serialization is suspicious”; it is now “fresh-process model reconstruction or snapshot import does not match the live trainer path”
 - `Rotary.inv_freq` is now serialized in checkpoints, and a second fresh proof run `proxy_p1_fast-20260319-192237-39db664f` still reproduced the same standalone replay failure on the original remote artifact, so the blocker is narrower: it is not just a missing non-persistent RoPE buffer
+- The DIAG proof run `proxy_p1_fast-20260319-204141-603684f1` showed that trainer and replay agree on hyperparameters and loaded-model fingerprints, and that fresh eager replay and fresh compiled replay agree with each other too
+- The first deterministic forward mismatch is at `enc0` while `emb` still matches exactly, so the remaining systems blocker is now concentrated inside block 0 runtime state rather than launcher/env/config plumbing
