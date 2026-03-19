@@ -206,6 +206,9 @@ def main() -> None:
             parsed["cost"] = manifest.get("estimated_cost")
         if "exit_code" in manifest:
             parsed["exit_code"] = manifest.get("exit_code")
+        for field_name in ("hypothesis_id", "group", "notes", "failure_reason"):
+            if field_name in manifest:
+                parsed[field_name] = manifest.get(field_name)
 
     if len(sys.argv) >= 3:
         out_path = Path(sys.argv[2])

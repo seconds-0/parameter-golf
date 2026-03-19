@@ -49,6 +49,9 @@ def main():
             "host": data.get("host"),
             "cost": data.get("cost"),
             "status": data.get("status", "failed"),
+            "group": data.get("group"),
+            "hypothesis_id": data.get("hypothesis_id"),
+            "notes": data.get("notes"),
         })
 
     if not runs:
@@ -62,19 +65,25 @@ def main():
     best_bpb = runs[0]["val_bpb"] if runs[0]["val_bpb"] is not None else None
 
     # Print table
-    hdr = f"{'Run ID':<30} | {'Host':<12} | {'Status':<7} | {'val_bpb':>9} | {'val_loss':>8} | {'Cost($)':>7} | {'Steps':>6} | {'Time(s)':>7}"
+    hdr = (
+        f"{'Run ID':<30} | {'Group':<14} | {'Hypothesis':<16} | {'Host':<12} | {'Status':<7} | "
+        f"{'val_bpb':>9} | {'val_loss':>8} | {'Cost($)':>7} | {'Steps':>6} | {'Time(s)':>7} | {'Notes':<18}"
+    )
     sep = "-" * len(hdr)
     print(hdr)
     print(sep)
     for r in runs:
         best = r["val_bpb"] == best_bpb and best_bpb is not None
         host = str(r["host"] or "N/A")[:12]
+        group = str(r["group"] or "N/A")[:14]
+        hypothesis = str(r["hypothesis_id"] or "N/A")[:16]
+        notes = str(r["notes"] or "")[:18]
         cost = fmt_number(r["cost"], 7, 2)
         time_s = fmt_number(r["time_s"], 7, 1)
         print(
-            f"{r['run_id']:<30} | {host:<12} | {str(r['status']):<7} | "
+            f"{r['run_id']:<30} | {group:<14} | {hypothesis:<16} | {host:<12} | {str(r['status']):<7} | "
             f"{fmt_number(r['val_bpb'], 9, 4, star=best)} | {fmt_number(r['val_loss'], 8, 4)} | "
-            f"{cost} | {fmt_number(r['steps'], 6)} | {time_s}"
+            f"{cost} | {fmt_number(r['steps'], 6)} | {time_s} | {notes:<18}"
         )
 
 

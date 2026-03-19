@@ -9,7 +9,7 @@ import random
 import re
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ POSITIVE_FLOAT_KEYS = {
     "MUON_MOMENTUM_WARMUP_START", "QK_GAIN_INIT", "ROPE_BASE", "SCALAR_LR",
     "TIED_EMBED_INIT_STD", "TIED_EMBED_LR",
 }
+CONFIG_METADATA_FIELDS = ("hypothesis_id", "group", "notes")
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class RunSpec:
     label: str
     env: dict[str, str]
     combo: dict[str, str]
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,26 @@ def _base_env(cfg: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
     return {**base_env, **env}, [*base_errors, *env_errors]
 
 
+def extract_config_metadata(cfg: dict[str, Any]) -> tuple[dict[str, str], list[str], list[str]]:
+    metadata: dict[str, str] = {}
+    warnings: list[str] = []
+    errors: list[str] = []
+    for field_name in CONFIG_METADATA_FIELDS:
+        value = cfg.get(field_name)
+        if value is None:
+            warnings.append(f"Missing optional metadata field {field_name}")
+            continue
+        if not isinstance(value, str):
+            errors.append(f"{field_name} must be a string")
+            continue
+        text = value.strip()
+        if not text:
+            warnings.append(f"Metadata field {field_name} is empty")
+            continue
+        metadata[field_name] = text
+    return metadata, warnings, errors
+
+
 def _combo_label(cfg: dict[str, Any], combo: dict[str, str]) -> str:
     template = cfg.get("naming")
     if isinstance(template, str):
@@ -180,12 +202,15 @@ def expand_runs(cfg: dict[str, Any]) -> tuple[list[RunSpec], list[str], list[str
     warnings: list[str] = []
     base_env, env_errors = _base_env(cfg)
     errors.extend(env_errors)
+    metadata, metadata_warnings, metadata_errors = extract_config_metadata(cfg)
+    warnings.extend(metadata_warnings)
+    errors.extend(metadata_errors)
     if errors:
         return [], warnings, errors
     sweep = cfg.get("sweep")
     if not sweep:
         label = base_env.get("RUN_ID") or str(cfg.get("name") or "run")
-        return [RunSpec(label=label, env=base_env, combo={})], warnings, []
+        return [RunSpec(label=label, env=base_env, combo={}, metadata=metadata)], warnings, []
     if not isinstance(sweep, dict):
         return [], warnings, ["sweep must be a mapping"]
     params = sweep.get("params")
@@ -217,7 +242,7 @@ def expand_runs(cfg: dict[str, Any]) -> tuple[list[RunSpec], list[str], list[str
     runs = []
     for combo in combos:
         env = {**base_env, **combo}
-        runs.append(RunSpec(label=_combo_label(cfg, combo), env=env, combo=combo))
+        runs.append(RunSpec(label=_combo_label(cfg, combo), env=env, combo=combo, metadata=metadata))
     return runs, warnings, []
 
 

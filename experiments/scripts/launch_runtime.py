@@ -56,7 +56,10 @@ def load_manifest(run_id: str) -> dict[str, Any] | None:
     path = RESULTS_DIR / run_id / "manifest.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
 
 
 def compute_cost(manifest: dict[str, Any]) -> float | None:
@@ -75,7 +78,19 @@ def parse_hosts(hosts: list[str]) -> list[str]:
     return parsed
 
 
-def build_manifest(config_path: Path, env: dict[str, str], label: str, host_arg: str, gpus: int, remote_dir: str | None) -> dict[str, Any]:
+def build_manifest(
+    config_path: Path,
+    env: dict[str, str],
+    label: str,
+    host_arg: str,
+    gpus: int,
+    remote_dir: str | None,
+    *,
+    run_id: str | None = None,
+    metadata: dict[str, str] | None = None,
+    sweep_id: str | None = None,
+    shutdown_enabled: bool = False,
+) -> dict[str, Any]:
     machine_name, machine, errors = resolve_machine(host_arg)
     if errors or machine is None:
         raise RuntimeError(f"{'; '.join(errors)}. Expected an entry in {MACHINES_FILE}")
@@ -83,28 +98,40 @@ def build_manifest(config_path: Path, env: dict[str, str], label: str, host_arg:
     shared_dir = remote_dir or str(machine.get("remote_dir") or "")
     if not shared_dir:
         raise RuntimeError(f"Machine {machine_name} is missing remote_dir in {MACHINES_FILE}")
-    run_id = unique_run_id(label)
-    remote_root = f"/tmp/pgolf_{run_id}"
+    current_run_id = run_id or unique_run_id(label)
+    remote_root = f"/tmp/pgolf_{current_run_id}"
+    metadata = dict(metadata or {})
     forwarded_env = {
         **env,
-        "RUN_ID": run_id,
+        "RUN_ID": current_run_id,
         "DATA_PATH": f"{shared_dir}/data/datasets/fineweb10B_sp1024",
         "TOKENIZER_PATH": f"{shared_dir}/data/tokenizers/fineweb_1024_bpe.model",
     }
+    if metadata.get("group"):
+        forwarded_env["PGOLF_WANDB_GROUP"] = metadata["group"]
+    if metadata.get("notes"):
+        forwarded_env["PGOLF_WANDB_NOTES"] = metadata["notes"]
+    tags = [f"hypothesis:{metadata['hypothesis_id']}"] if metadata.get("hypothesis_id") else []
+    if tags:
+        forwarded_env["PGOLF_WANDB_TAGS"] = ",".join(tags)
     if "WANDB_API_KEY" in os.environ:
         forwarded_env["WANDB_API_KEY"] = os.environ["WANDB_API_KEY"]
     manifest_env = {**forwarded_env}
     if "WANDB_API_KEY" in manifest_env:
         manifest_env["WANDB_API_KEY"] = "<redacted>"
     start_epoch = time.time()
+    shutdown_minutes = int(machine.get("shutdown_after_idle_minutes", 2) or 2)
     manifest = {
-        "run_id": run_id,
+        "run_id": current_run_id,
+        "label": label,
         "config_file": str(config_path),
         "resolved_env": manifest_env,
         "git_sha": git_sha(),
         "host": host,
         "host_name": machine_name,
         "gpus": gpus,
+        "machine_gpus": machine.get("gpus"),
+        "machine_remote_dir": shared_dir,
         "start_time": now_iso(),
         "start_time_epoch": start_epoch,
         "end_time": None,
@@ -116,12 +143,22 @@ def build_manifest(config_path: Path, env: dict[str, str], label: str, host_arg:
         "trainer_snapshot_sha": sha256_file(TRAINER_PATH),
         "remote_root": remote_root,
         "remote_repo_dir": f"{remote_root}/repo",
-        "remote_log_path": f"{remote_root}/repo/logs/{run_id}.txt",
+        "remote_log_path": f"{remote_root}/repo/logs/{current_run_id}.txt",
         "remote_stdout_path": f"{remote_root}/launcher.stdout",
         "remote_exit_code_path": f"{remote_root}/exit_code",
         "remote_pid_path": f"{remote_root}/pid",
         "remote_wrapper_path": f"{remote_root}/run.sh",
         "pid": None,
+        "failure_reason": None,
+        "hypothesis_id": metadata.get("hypothesis_id"),
+        "group": metadata.get("group"),
+        "notes": metadata.get("notes"),
+        "sweep_id": sweep_id,
+        "shutdown_enabled": shutdown_enabled,
+        "shutdown_after_idle_minutes": shutdown_minutes,
+        "shutdown_command": None,
+        "last_log_line": None,
+        "last_log_update_epoch": None,
         "_forwarded_env": forwarded_env,
     }
     manifest["estimated_cost"] = compute_cost(manifest)
@@ -187,6 +224,7 @@ def start_remote_run(manifest: dict[str, Any]) -> None:
             f"cd {q(manifest['remote_repo_dir'])}",
             "mkdir -p logs",
             export_lines,
+            f"export PYTHONPATH={q(str(Path(manifest['remote_repo_dir']) / 'experiments/scripts'))}${{PYTHONPATH:+:$PYTHONPATH}}",
             f"echo $$ > {q(manifest['remote_pid_path'])}",
             f"python3 -m torch.distributed.run --standalone --nproc_per_node={manifest['gpus']} train_gpt.py > {q(manifest['remote_stdout_path'])} 2>&1",
             "status=$?",
@@ -280,11 +318,133 @@ def remote_states(manifests: list[dict[str, Any]]) -> dict[str, tuple[str, int |
     return states
 
 
+def remote_log_snapshot(manifest: dict[str, Any], *, lines: int = 20) -> dict[str, Any]:
+    log_path_raw = manifest.get("remote_log_path")
+    stdout_path_raw = manifest.get("remote_stdout_path")
+    if not log_path_raw and not stdout_path_raw:
+        return {"lines": [], "last_line": None, "mtime_epoch": None, "source": None}
+    command = "\n".join(
+        [
+            f"if [ -n {q(str(log_path_raw or ''))} ] && [ -f {q(str(log_path_raw or ''))} ]; then target={q(str(log_path_raw or ''))}; "
+            f"elif [ -n {q(str(stdout_path_raw or ''))} ] && [ -f {q(str(stdout_path_raw or ''))} ]; then target={q(str(stdout_path_raw or ''))}; "
+            "else exit 0; fi",
+            f"tail -n {int(lines)} \"$target\" 2>/dev/null || true",
+            "printf '\\n__PGOLF_MTIME__:%s\\n' \"$(python3 - <<'PY' \"$target\"\n"
+            "from pathlib import Path\n"
+            "import sys\n"
+            "try:\n"
+            "    print(int(Path(sys.argv[1]).stat().st_mtime))\n"
+            "except OSError:\n"
+            "    print('')\n"
+            "PY\n"
+            ")\"",
+        ]
+    )
+    proc = ssh(manifest["host"], command, capture=True, check=False)
+    output = proc.stdout.splitlines()
+    mtime: float | None = None
+    lines_out: list[str] = []
+    for line in output:
+        if line.startswith("__PGOLF_MTIME__:"):
+            value = line.split(":", 1)[1].strip()
+            if value.isdigit():
+                mtime = float(value)
+            continue
+        lines_out.append(line)
+    last_line = next((line for line in reversed(lines_out) if line.strip()), None)
+    return {
+        "lines": lines_out,
+        "last_line": last_line,
+        "mtime_epoch": mtime,
+        "source": log_path_raw if lines_out else stdout_path_raw,
+    }
+
+
+def remote_log_summaries(manifests: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not manifests:
+        return {}
+    summaries: dict[str, dict[str, Any]] = {}
+    by_host: dict[str, list[dict[str, Any]]] = {}
+    for manifest in manifests:
+        by_host.setdefault(str(manifest["host"]), []).append(manifest)
+    for host, host_manifests in by_host.items():
+        blocks: list[str] = []
+        for manifest in host_manifests:
+            log_path_raw = manifest.get("remote_log_path")
+            stdout_path_raw = manifest.get("remote_stdout_path")
+            run_id = q(manifest["run_id"])
+            if not log_path_raw and not stdout_path_raw:
+                blocks.append(f'printf "%s\\t\\t\\n" {run_id}')
+                continue
+            log_path = q(str(log_path_raw or ""))
+            stdout_path = q(str(stdout_path_raw or ""))
+            block = "\n".join(
+                [
+                    f"if [ -f {log_path} ]; then target={log_path}; elif [ -f {stdout_path} ]; then target={stdout_path}; "
+                    f"else printf \"%s\\t\\t\\n\" {run_id}; target=''; fi",
+                    "[ -n \"$target\" ] || true",
+                    "mtime=$(python3 - <<'PY' \"$target\"\n"
+                    "from pathlib import Path\n"
+                    "import sys\n"
+                    "try:\n"
+                    "    print(int(Path(sys.argv[1]).stat().st_mtime))\n"
+                    "except OSError:\n"
+                    "    print('')\n"
+                    "PY\n"
+                    ")",
+                    "if [ -n \"$target\" ]; then last=$(tail -n 20 \"$target\" 2>/dev/null | tail -n 1 | tr '\\t' ' ' | tr '\\r' ' '); "
+                    f'printf "%s\\t%s\\t%s\\n" {run_id} "$mtime" "$last"; fi',
+                ]
+            )
+            blocks.append(block)
+        proc = ssh(host, "\n".join(blocks), capture=True, check=False)
+        for line in proc.stdout.splitlines():
+            run_id, _, remainder = line.partition("\t")
+            if not run_id:
+                continue
+            mtime_text, _, last_line = remainder.partition("\t")
+            summaries[run_id] = {
+                "mtime_epoch": float(mtime_text) if mtime_text.strip().isdigit() else None,
+                "last_line": last_line.strip() or None,
+            }
+    return summaries
+
+
+def terminate_remote_run(manifest: dict[str, Any], *, failure_reason: str | None = None) -> None:
+    pid_path = q(manifest["remote_pid_path"])
+    ssh(
+        manifest["host"],
+        f"if [ -f {pid_path} ]; then kill -TERM -- -\"$(cat {pid_path})\" 2>/dev/null || kill -TERM \"$(cat {pid_path})\" 2>/dev/null || true; fi",
+        check=False,
+    )
+    if failure_reason:
+        manifest["failure_reason"] = failure_reason
+    manifest["status"] = "failed"
+    manifest["exit_code"] = manifest.get("exit_code") or -9
+    manifest["end_time"] = manifest.get("end_time") or now_iso()
+    manifest["end_time_epoch"] = manifest.get("end_time_epoch") or time.time()
+    manifest["estimated_cost"] = compute_cost(manifest)
+    save_manifest(_visible(manifest))
+
+
+def schedule_shutdown(manifests: list[dict[str, Any]]) -> str | None:
+    if not manifests:
+        return None
+    minutes = int(manifests[0].get("shutdown_after_idle_minutes") or 2)
+    command = f"sudo shutdown -h +{minutes}"
+    ssh(manifests[0]["host"], command, check=False)
+    for manifest in manifests:
+        manifest["shutdown_command"] = command
+        manifest["estimated_cost"] = compute_cost(manifest)
+        save_manifest(_visible(manifest))
+    return command
+
+
 def collect_run(manifest: dict[str, Any], *, summarize: bool) -> None:
     result_dir = RESULTS_DIR / manifest["run_id"]
     result_dir.mkdir(parents=True, exist_ok=True)
     exit_state, exit_code = remote_state(manifest)
-    if exit_state == "finished":
+    if exit_state == "finished" and manifest.get("exit_code") is None:
         manifest["exit_code"] = exit_code
         manifest["end_time"] = manifest.get("end_time") or now_iso()
         manifest["end_time_epoch"] = manifest.get("end_time_epoch") or time.time()
@@ -301,11 +461,14 @@ def collect_run(manifest: dict[str, Any], *, summarize: bool) -> None:
         run_cmd([sys.executable, str(SCRIPTS_DIR / "parse_log.py"), str(train_log), str(metrics_path)], check=False)
     metrics_status = None
     if metrics_path.exists():
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            metrics = {}
         metrics_status = metrics.get("status")
     if manifest.get("exit_code") is None:
         manifest["status"] = "running"
-    elif manifest["exit_code"] == 0 and metrics_status == "success":
+    elif manifest["exit_code"] == 0 and metrics_status == "success" and not manifest.get("failure_reason"):
         manifest["status"] = "success"
     else:
         manifest["status"] = "failed"
@@ -316,7 +479,7 @@ def collect_run(manifest: dict[str, Any], *, summarize: bool) -> None:
         run_cmd([sys.executable, str(SCRIPTS_DIR / "compare.py"), str(metrics_path)], check=False)
 
 
-def wait_for_run(manifest: dict[str, Any], *, summarize: bool) -> None:
+def wait_for_run(manifest: dict[str, Any], *, summarize: bool, watchdog_enabled: bool = True) -> None:
     try:
         while True:
             state, exit_code = remote_state(manifest)
@@ -326,19 +489,60 @@ def wait_for_run(manifest: dict[str, Any], *, summarize: bool) -> None:
                 manifest["end_time_epoch"] = time.time()
                 break
             if state == "unknown":
-                manifest["exit_code"] = -1
-                manifest["end_time"] = now_iso()
-                manifest["end_time_epoch"] = time.time()
+                manifest["exit_code"] = manifest.get("exit_code") or -1
+                manifest["end_time"] = manifest.get("end_time") or now_iso()
+                manifest["end_time_epoch"] = manifest.get("end_time_epoch") or time.time()
                 break
+            if watchdog_enabled:
+                import watchdog
+
+                outcome = watchdog.check_watchdog(manifest)
+                if outcome.get("triggered"):
+                    manifest["failure_reason"] = outcome.get("failure_reason")
+                    manifest["exit_code"] = -9
+                    manifest["end_time"] = now_iso()
+                    manifest["end_time_epoch"] = time.time()
+                    break
             time.sleep(15)
     finally:
         collect_run(manifest, summarize=summarize)
 
 
-def launch_single(config_path: Path, env: dict[str, str], label: str, host: str, gpus: int, remote_dir: str | None, *, wait: bool) -> str:
-    manifest = build_manifest(config_path, env, label, host, gpus, remote_dir)
+def launch_single(
+    config_path: Path,
+    env: dict[str, str],
+    label: str,
+    host: str,
+    gpus: int,
+    remote_dir: str | None,
+    *,
+    wait: bool,
+    run_id: str | None = None,
+    metadata: dict[str, str] | None = None,
+    sweep_id: str | None = None,
+    shutdown: bool = False,
+    skip_preflight: bool = False,
+) -> str:
+    manifest = build_manifest(
+        config_path,
+        env,
+        label,
+        host,
+        gpus,
+        remote_dir,
+        run_id=run_id,
+        metadata=metadata,
+        sweep_id=sweep_id,
+        shutdown_enabled=shutdown,
+    )
     save_manifest(_visible(manifest))
     try:
+        if not skip_preflight:
+            import preflight
+
+            preflight_result = preflight.run_preflight_target(manifest["host_name"], print_output=False)
+            if not preflight_result["ok"]:
+                raise RuntimeError(preflight_result["summary"])
         sync_repo(manifest)
         ensure_remote_data(manifest)
         maybe_install_wandb(manifest)
@@ -350,10 +554,13 @@ def launch_single(config_path: Path, env: dict[str, str], label: str, host: str,
         manifest["end_time"] = now_iso()
         manifest["end_time_epoch"] = time.time()
         manifest["estimated_cost"] = compute_cost(manifest)
+        manifest["failure_reason"] = manifest.get("failure_reason") or str(exc)
         manifest["error"] = str(exc)
         save_manifest(_visible(manifest))
         raise
     print(f"Started {manifest['run_id']} on {manifest['host_name']} ({manifest['host']})")
     if wait:
         wait_for_run(manifest, summarize=True)
+        if shutdown:
+            schedule_shutdown([manifest])
     return manifest["run_id"]

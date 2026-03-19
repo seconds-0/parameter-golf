@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import subprocess
 import sys
+import time
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -15,10 +18,19 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import compare
 import config_utils
+import cost
 import launch
 import launch_runtime
 import parse_log
+import preflight
 import submit
+import sweep_queue
+import watchdog
+
+gc_spec = importlib.util.spec_from_file_location("pgolf_gc_test", SCRIPTS_DIR / "gc.py")
+assert gc_spec is not None and gc_spec.loader is not None
+pgolf_gc = importlib.util.module_from_spec(gc_spec)
+gc_spec.loader.exec_module(pgolf_gc)
 
 BASELINE_CONFIG = ROOT / "experiments" / "configs" / "baseline.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
@@ -101,6 +113,28 @@ def test_detect_divisibility_error(tmp_path: Path) -> None:
     )
     result = config_utils.validate_config(config_path)
     assert any("NUM_HEADS must be divisible by NUM_KV_HEADS" in error for error in result.errors)
+
+
+def test_warn_missing_metadata(tmp_path: Path) -> None:
+    config_path = write_yaml(
+        tmp_path / "missing_meta.yaml",
+        """
+        name: missing_meta
+        env:
+          VOCAB_SIZE: "1024"
+          NUM_LAYERS: "9"
+          MODEL_DIM: "512"
+          NUM_HEADS: "8"
+          NUM_KV_HEADS: "4"
+          MLP_MULT: "2"
+          TIE_EMBEDDINGS: "1"
+          TRAIN_BATCH_TOKENS: "524288"
+          TRAIN_SEQ_LEN: "1024"
+        """,
+    )
+    result = config_utils.validate_config(config_path)
+    assert result.ok
+    assert any("Missing optional metadata field hypothesis_id" in warning for warning in result.warnings)
 
 
 def test_extends_config(tmp_path: Path) -> None:
@@ -292,6 +326,33 @@ def test_manifest_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert launch_runtime.load_manifest("roundtrip") == manifest
 
 
+def test_build_manifest_includes_metadata_and_wandb_forwarding(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        launch_runtime,
+        "resolve_machine",
+        lambda host: ("alpha", {"host": "root@example", "remote_dir": "/remote/shared", "gpus": 8, "hourly_rate": 12.0, "shutdown_after_idle_minutes": 7}, []),
+    )
+    monkeypatch.setattr(launch_runtime, "git_sha", lambda: "abc123")
+    monkeypatch.setattr(launch_runtime, "sha256_file", lambda path: "deadbeef")
+    manifest = launch_runtime.build_manifest(
+        BASELINE_CONFIG,
+        {"WANDB_PROJECT": "pgolf"},
+        "meta-run",
+        "alpha",
+        8,
+        None,
+        metadata={"hypothesis_id": "h1", "group": "g1", "notes": "hello"},
+        shutdown_enabled=True,
+    )
+    assert manifest["hypothesis_id"] == "h1"
+    assert manifest["group"] == "g1"
+    assert manifest["notes"] == "hello"
+    assert manifest["shutdown_after_idle_minutes"] == 7
+    assert manifest["_forwarded_env"]["PGOLF_WANDB_GROUP"] == "g1"
+    assert manifest["_forwarded_env"]["PGOLF_WANDB_NOTES"] == "hello"
+    assert manifest["_forwarded_env"]["PGOLF_WANDB_TAGS"] == "hypothesis:h1"
+
+
 def test_collect_run_downloads_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(launch_runtime, "RESULTS_DIR", tmp_path / "results")
 
@@ -339,6 +400,23 @@ def test_collect_run_downloads_snapshot(tmp_path: Path, monkeypatch: pytest.Monk
     assert (tmp_path / "results" / "collect-me" / "train_gpt.py").read_text(encoding="utf-8") == "snapshot trainer\n"
 
 
+def test_schedule_shutdown_records_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launch_runtime, "RESULTS_DIR", tmp_path / "results")
+    commands: list[str] = []
+
+    def fake_ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+
+    monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
+    manifest = {"run_id": "shutdown-me", "host": "host-1", "shutdown_after_idle_minutes": 5, "start_time_epoch": 0.0, "hourly_rate": None}
+    launch_runtime.schedule_shutdown([manifest])
+    saved = launch_runtime.load_manifest("shutdown-me")
+    assert commands == ["sudo shutdown -h +5"]
+    assert saved is not None
+    assert saved["shutdown_command"] == "sudo shutdown -h +5"
+
+
 def test_status_batches_by_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     results_dir = tmp_path / "results"
     monkeypatch.setattr(launch, "RESULTS_DIR", results_dir)
@@ -378,17 +456,46 @@ def test_status_batches_by_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
     def fake_ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
         ssh_calls.append((host, command))
-        stdout = {
-            "host-1": "run-a\tRUNNING\nrun-b\tEXIT:0\n",
-            "host-2": "run-c\tUNKNOWN\n",
-        }[host]
+        if "RUNNING" in command or "EXIT:" in command:
+            stdout = {
+                "host-1": "run-a\tRUNNING\nrun-b\tEXIT:0\n",
+                "host-2": "run-c\tUNKNOWN\n",
+            }[host]
+        else:
+            stdout = {
+                "host-1": "run-a\t10\tstep:1/10 train_loss:1.0 train_time:100ms step_avg:100ms\nrun-b\t12\tstep:10/10 val_loss:2.0 val_bpb:1.2 train_time:100ms step_avg:100ms\n",
+                "host-2": "run-c\t13\tCUDA out of memory\n",
+            }[host]
         return subprocess.CompletedProcess(["ssh", host, command], 0, stdout, "")
 
     monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
-    assert launch.cmd_status(type("Args", (), {"host": None})()) == 0
+    assert launch.cmd_status(type("Args", (), {"host": None, "watch": False, "running": False, "failed": False})()) == 0
     capsys.readouterr()
-    assert [host for host, _ in ssh_calls] == ["host-1", "host-2"]
-    assert sum(host == "host-1" for host, _ in ssh_calls) == 1
+    assert sorted(set(host for host, _ in ssh_calls)) == ["host-1", "host-2"]
+    assert sum(host == "host-1" for host, _ in ssh_calls) == 2
+
+
+def test_render_status_includes_rich_columns() -> None:
+    output = launch.render_status(
+        [
+            {
+                "run_id": "run-1",
+                "group": "grp",
+                "host_name": "alpha",
+                "status": "failed",
+                "start_time_epoch": time.time() - 30,
+                "end_time_epoch": time.time(),
+                "estimated_cost": 1.23,
+                "hypothesis_id": "h1",
+                "failure_reason": "cuda_oom",
+                "last_log_line": "step:10/20 train_loss:1.2340 train_time:100ms step_avg:100ms",
+                "last_log_update_epoch": time.time() - 5,
+            }
+        ]
+    )
+    assert "Failure" in output
+    assert "cuda_oom" in output
+    assert "grp" in output
 
 
 def test_ensure_remote_data_uses_flock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -454,3 +561,157 @@ def test_start_remote_run_uses_unique_heredoc_and_verifies_startup(
     assert "sleep 2" in command
     assert "kill -0" in command
     assert manifest["pid"] == 4321
+
+
+def test_watchdog_detects_invalid_loss() -> None:
+    outcome = watchdog.evaluate_snapshot(
+        {
+            "lines": [
+                "step:99/200 train_loss:1.0 train_time:100ms step_avg:100ms",
+                "step:100/200 train_loss:nan train_time:100ms step_avg:100ms",
+            ],
+            "mtime_epoch": time.time(),
+        },
+        now_epoch=time.time(),
+    )
+    assert outcome["triggered"] is True
+    assert outcome["failure_reason"] == "invalid_train_loss"
+
+
+def test_watchdog_detects_stall_and_regression() -> None:
+    now_epoch = time.time()
+    stalled = watchdog.evaluate_snapshot(
+        {
+            "lines": ["step:150/200 train_loss:1.0 train_time:100ms step_avg:1000ms"],
+            "mtime_epoch": now_epoch - 10,
+        },
+        now_epoch=now_epoch,
+    )
+    regressing = watchdog.evaluate_snapshot(
+        {
+            "lines": [
+                "step:50/200 val_loss:2.0 val_bpb:1.10 train_time:100ms step_avg:100ms",
+                "step:100/200 val_loss:2.0 val_bpb:1.11 train_time:100ms step_avg:100ms",
+                "step:150/200 val_loss:2.0 val_bpb:1.12 train_time:100ms step_avg:100ms",
+                "step:200/200 val_loss:2.0 val_bpb:1.13 train_time:100ms step_avg:100ms",
+            ],
+            "mtime_epoch": now_epoch,
+        },
+        now_epoch=now_epoch,
+    )
+    assert stalled["failure_reason"] == "stalled"
+    assert regressing["failure_reason"] == "regressing_val_bpb"
+
+
+def test_watchdog_check_kills_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: list[dict[str, object]] = []
+    terminated: list[str] = []
+    monkeypatch.setattr(watchdog, "remote_log_snapshot", lambda manifest, lines=20: {"lines": ["CUDA out of memory"], "mtime_epoch": time.time(), "last_line": "CUDA out of memory"})
+    monkeypatch.setattr(watchdog, "save_manifest", lambda manifest: saved.append(dict(manifest)))
+    monkeypatch.setattr(watchdog, "terminate_remote_run", lambda manifest, failure_reason=None: terminated.append(str(failure_reason)))
+    manifest = {"run_id": "watch-1", "status": "running"}
+    outcome = watchdog.check_watchdog(manifest)
+    assert outcome["triggered"] is True
+    assert terminated == ["cuda_oom"]
+    assert saved[-1]["failure_reason"] == "cuda_oom"
+
+
+def test_preflight_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preflight, "resolve_machine", lambda host: ("alpha", {"host": "root@example", "remote_dir": "/shared", "gpus": 8}, []))
+
+    def fake_ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
+        mapping = {
+            "echo ok": "ok\n",
+            "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l": "8\n",
+            "python3 -c 'import torch; print(torch.cuda.device_count())'": "8\n",
+            "python3 -c 'import sentencepiece, numpy; print(\"ok\")'": "ok\n",
+            "python3 -c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'": "200\n",
+        }
+        if command.startswith("test -d "):
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        if command.startswith("mkdir -p /tmp/pgolf_preflight_test"):
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        return subprocess.CompletedProcess(["ssh", host, command], 0, mapping[command], "")
+
+    monkeypatch.setattr(preflight, "ssh_capture", fake_ssh)
+    payload = preflight.run_preflight_target("alpha", print_output=False)
+    assert payload["ok"] is True
+    assert all(result["ok"] for result in payload["results"])
+
+
+def test_cost_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    monkeypatch.setattr(cost, "RESULTS_DIR", results_dir)
+    now = time.time()
+    for run_id, status, amount in [("a", "success", 1.5), ("b", "running", 2.0)]:
+        run_dir = results_dir / run_id
+        run_dir.mkdir()
+        (run_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "status": status,
+                    "estimated_cost": amount,
+                    "host_name": "alpha",
+                    "start_time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
+                }
+            ),
+            encoding="utf-8",
+        )
+    output = cost.summarize_costs(cost.load_manifests(), budget=10.0)
+    assert "Total spend" in output
+    assert "$3.50" in output
+    assert "Remaining budget" in output
+
+
+def test_sweep_queue_create_and_requeue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sweep_queue, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(sweep_queue, "SWEEPS_DIR", tmp_path / "results" / "_sweeps")
+    result = config_utils.validate_config(SWEEP_CONFIG)
+    queue = sweep_queue.create_queue(str(SWEEP_CONFIG), result.runs[:2])
+    sweep_id = queue["sweep_id"]
+    claimed = sweep_queue.claim_next_run(sweep_id, "alpha")
+    assert claimed is not None
+    assert claimed["status"] == "running"
+    payload = sweep_queue.load_queue(sweep_id)
+    payload["runs"][0]["status"] = "failed"
+    sweep_queue.save_queue(payload)
+    assert sweep_queue.requeue_runs(sweep_id, failed=True, lost=False) == 1
+    reloaded = sweep_queue.load_queue(sweep_id)
+    assert reloaded["runs"][0]["status"] == "pending"
+
+
+def test_gc_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pgolf_gc,
+        "list_remote_dirs",
+        lambda host: (
+            "root@example",
+            [
+                {"path": "/tmp/pgolf_old-run", "age_seconds": 30 * 3600, "mtime": time.time() - 30 * 3600},
+                {"path": "/tmp/pgolf_fresh-run", "age_seconds": 2 * 3600, "mtime": time.time() - 2 * 3600},
+            ],
+        ),
+    )
+    monkeypatch.setattr(pgolf_gc, "is_collected", lambda run_id: run_id == "old-run")
+    payload = pgolf_gc.run_gc("alpha", older_than="24h", dry_run=True)
+    assert len(payload["deletable"]) == 1
+    assert payload["deletable"][0]["run_id"] == "old-run"
+
+
+def test_sitecustomize_adds_wandb_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_calls: list[dict[str, object]] = []
+    fake_wandb = types.SimpleNamespace(init=lambda *args, **kwargs: fake_calls.append(kwargs) or kwargs)
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+    monkeypatch.setenv("PGOLF_WANDB_GROUP", "group-a")
+    monkeypatch.setenv("PGOLF_WANDB_NOTES", "note-a")
+    monkeypatch.setenv("PGOLF_WANDB_TAGS", "hypothesis:h1,tag2")
+    spec = importlib.util.spec_from_file_location("pgolf_sitecustomize", SCRIPTS_DIR / "sitecustomize.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    fake_wandb.init(project="demo")
+    assert fake_calls[-1]["group"] == "group-a"
+    assert fake_calls[-1]["notes"] == "note-a"
+    assert fake_calls[-1]["tags"] == ["hypothesis:h1", "tag2"]
