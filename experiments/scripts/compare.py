@@ -12,6 +12,16 @@ def load_metrics(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def replay_delta(final: dict, key: str, val_key: str, ref_key: str) -> float | None:
+    if final.get(key) is not None:
+        return final.get(key)
+    value = final.get(val_key)
+    reference = final.get(ref_key)
+    if value is None or reference is None:
+        return None
+    return value - reference
+
+
 def fmt_number(value: float | int | None, width: int, precision: int = 4, *, star: bool = False) -> str:
     if value is None:
         return f"{'N/A':>{width}}"
@@ -66,6 +76,12 @@ def main():
             "postquant_val_loss": final.get("val_loss"),
             "prequant_val_bpb": final.get("prequant_val_bpb"),
             "qgap_bpb": final.get("qgap_bpb"),
+            "uncompiled_delta_bpb": replay_delta(
+                final, "uncompiled_check_delta_bpb", "uncompiled_check_val_bpb", "prequant_val_bpb"
+            ),
+            "reloaded_postquant_delta_bpb": replay_delta(
+                final, "reloaded_postquant_delta_bpb", "reloaded_postquant_val_bpb", "postquant_val_bpb"
+            ),
             "steps": final.get("stop_step") or (data["train_steps"][-1]["step"] if data.get("train_steps") else None),
             "time_s": (data["train_steps"][-1]["train_time_ms"] / 1000) if data.get("train_steps") else None,
             "step_avg_ms": (data["train_steps"][-1]["step_avg_ms"] if data.get("train_steps") else None),
@@ -108,6 +124,7 @@ def main():
     # Print table
     hdr = (
         f"{'Run ID':<30} | {'Status':<7} | {'PostBPB':>9} | {'Δpq':>8} | {'PreBPB':>9} | {'qgap':>8} | "
+        f"{'EgrΔ':>8} | {'RldΔ':>8} | "
         f"{'StepMs':>7} | {'Tok/s':>7} | {'Slack':>7} | {'Cost($)':>7} | {'Host':<12} | {'Group':<12} | {'Hypothesis':<16}"
     )
     sep = "-" * len(hdr)
@@ -123,6 +140,7 @@ def main():
             f"{r['run_id']:<30} | {str(r['status']):<7} | "
             f"{fmt_number(r['postquant_val_bpb'], 9, 4, star=best)} | {fmt_delta(r['delta_pq'], 8, 4)} | "
             f"{fmt_number(r['prequant_val_bpb'], 9, 4)} | {fmt_number(r['qgap_bpb'], 8, 4)} | "
+            f"{fmt_delta(r['uncompiled_delta_bpb'], 8, 4)} | {fmt_delta(r['reloaded_postquant_delta_bpb'], 8, 4)} | "
             f"{fmt_number(r['step_avg_ms'], 7, 1)} | {fmt_compact(r['tok_s'], 7)} | {fmt_compact(r['slack_bytes'], 7)} | "
             f"{cost} | {host:<12} | {group:<12} | {hypothesis:<16}"
         )

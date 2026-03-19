@@ -18,12 +18,12 @@ The experiment infrastructure must be trustworthy before any experimental result
 - All new experiment knobs as env vars (auto-discovered by config_utils)
 
 ## Status
-Trusted for launch/measurement on the training path, but not yet trusted for saved-artifact replay. `P-01`, `P-02`, `P-03`, `P-04`, `P-05`, `P-06`, `X-01`, `X-02`, `E00`, `E01`, and `E02` are done. The next work in sequence is now a focused trainer serialization bughunt, because fresh 1xH100 replays still do not reproduce the saved checkpoints from `E01` or `E02`.
+Trusted for launch/measurement on the training path, but not yet trusted for standalone saved-artifact replay. `P-01`, `P-02`, `P-03`, `P-04`, `P-05`, `P-06`, `X-01`, `X-02`, `E00`, `E01`, and `E02` are done. The next work in sequence is now a focused fresh-process replay bughunt, because two fresh instrumented runs showed trainer-side reload is healthy while standalone replay is still wrong.
 
 ## Learnings
 - MLX lazy eval bug fixed (mx.synchronize → mx.eval)
-- 50 infra tests passing
-- Codex + Gemini review hardened the replay utility, but a deeper trainer-side serialization bug remains
+- 53 infra tests passing
+- Codex + Gemini review hardened the replay utility, but a deeper fresh-process reconstruction bug remains
 - `E00` succeeded on `proxy_p0_smoke-20260319-082117-62aaaea6` with post-roundtrip `val_bpb=2.59277612`, `qgap_bpb=0.00857417`, and `artifact_slack_bytes=9,350,400`
 - The first live `1xH100` run caught a launcher bug: `launch.py run` was defaulting to `8` GPUs instead of the machine's configured GPU count
 - Triton requires a tiny compile toolchain on remote hosts; preflight now verifies `Python.h` and `gcc` before launch
@@ -37,4 +37,8 @@ Trusted for launch/measurement on the training path, but not yet trusted for sav
 - The `E02` runtime profile matches the published baseline closely enough to trust future deltas: `step_avg_ms=43.55`, `tok_s=12.04M`, and the exact post-roundtrip gap vs the published `1.22436570` is only `+0.00192237`
 - `export_eval.py` now prefers the checkpoint's neighboring manifest env and trainer snapshot, scrubs ambient trainer env vars before import, and writes `final_model.export_eval.int8.ptz` by default so replay debugging does not overwrite a trusted artifact
 - Fresh 1xH100 replay checks proved the remaining bug is deeper than exporter config drift: the saved `E02` raw checkpoint replayed at `prequant_val_bpb=1.81346210` / `postquant_val_bpb=1.82621440`, and the saved `E01` raw checkpoint replayed at `1.79180195` / `1.79691088`
-- Because those diagnostics used the saved run manifest, saved trainer snapshot, and default exporter settings, the next systems tranche should target trainer-side artifact serialization or live-vs-saved model divergence before any Track B sweep resumes
+- The trainer now logs `uncompiled_check`, `checkpoint_save_verify`, `reloaded_prequant_exact`, and `reloaded_int8_zlib_roundtrip_exact`, which gives us an in-process proof path for compiled-vs-eager drift and raw/quantized save fidelity
+- `parse_log.py`, `compare.py`, and `launch.py status` now expose the replay-trust deltas directly, so a single instrumented GPU run can decide the next fix with much less ambiguity
+- The fresh proof run `proxy_p1_fast-20260319-185044-b42cf8f0` did exactly that separation: inside the trainer, the raw checkpoint and quantized artifact stayed within about `+0.0006` bpb of the live end-of-run metrics, and the raw checkpoint save verified byte-for-byte against the live state dict
+- Replaying that same fresh checkpoint in a separate process still failed badly via `export_eval.py` (`1.78986763/1.79694755`), so the systems blocker is no longer “trainer serialization is suspicious”; it is now “fresh-process model reconstruction or snapshot import does not match the live trainer path”
+- `Rotary.inv_freq` is now serialized in checkpoints, and a second fresh proof run `proxy_p1_fast-20260319-192237-39db664f` still reproduced the same standalone replay failure on the original remote artifact, so the blocker is narrower: it is not just a missing non-persistent RoPE buffer

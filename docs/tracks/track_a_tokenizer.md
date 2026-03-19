@@ -20,10 +20,11 @@ The current SP-1024 tokenizer may not be optimal. A time-capped run is really a 
 ## Decision Rules
 - Kill a tokenizer at P1 if Δpq ≥ +0.004 or step time AND fragmentation are both worse
 - Promote if Δpq ≤ -0.003, or within 0.001 of baseline with meaningful artifact slack gain
+- Offline tokenizer stats only decide what deserves a P1 run; they do not rank winners
 - Only ONE tokenizer winner goes to composition
 
 ## Status
-Not started. Depends on: X-06 (tokenizer stats utility), P-01 (config-driven paths).
+Not started. Depends on: E02 (trusted baseline reproduction), P-01 (config-driven paths), X-06 (tokenizer stats utility). Do not start tokenizer comparisons against the current hardcoded SP-1024 path assumptions.
 
 ## Learnings
 (Updated as experiments complete)

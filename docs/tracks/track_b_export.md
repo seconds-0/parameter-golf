@@ -24,7 +24,7 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 - E14: promote if Δpq ≤ -0.004 and step slowdown <12%
 
 ## Status
-Blocked on trainer-side replay correctness. `P-02` is complete and `E02` passed on `baseline_repro-20260319-093041-82dade88`, but fresh 1xH100 replays of saved `final_model.pt` artifacts still do not reproduce the trusted in-run metrics, even when `export_eval.py` uses the checkpoint's own manifest env and trainer snapshot. `E03` and `E04` remain paused until the saved-artifact path is trustworthy.
+Blocked on fresh-process replay correctness. `P-02` is complete and `E02` passed on `baseline_repro-20260319-093041-82dade88`, but fresh 1xH100 replays of saved `final_model.pt` artifacts still do not reproduce the trusted in-run metrics. Multiple fresh instrumented runs proved the in-trainer reload path is healthy, and persisting RoPE `inv_freq` did not fix standalone replay, so `E03` and `E04` remain paused until the fresh-process reconstruction path is explained.
 
 ## Learnings
 - Exporter controls currently exposed via env vars: `INT8_CLIP_PERCENTILE`, `INT8_KEEP_FLOAT_MAX_NUMEL`, `CONTROL_TENSOR_NAME_PATTERNS`, and `INT8_KEEP_FLOAT_FP32_NAME_PATTERNS`
@@ -32,4 +32,8 @@ Blocked on trainer-side replay correctness. `P-02` is complete and `E02` passed 
 - The trusted reference checkpoint is `baseline_repro-20260319-093041-82dade88/final_model.pt`, with exact prequant `val_bpb=1.21919389`, postquant `val_bpb=1.22628807`, `qgap_bpb=0.00709417`, and `total_submission_bytes=15,861,240`
 - A stricter default-setting replay of that same `E02` checkpoint on 1xH100 still failed badly: `x05_replay_check.json` came back at `prequant_val_bpb=1.81346210` and `postquant_val_bpb=1.82621440`, which means the blocker is not just config drift inside `export_eval.py`
 - The same failure appears on the 1xH100 `E01` control artifact: `x05_e01_replay_check.json` replayed `phase0_e01_seed1337-20260319-085619-0bcbed04/final_model.pt` at `1.79180195/1.79691088` instead of the trusted in-run `1.38394218/1.38651817`
-- Current working theory: `export_eval.py` is now close enough to trusted that the remaining blocker lives in trainer-side artifact serialization or live-vs-saved model divergence, so the next Track B prerequisite is a targeted trainer bughunt rather than more exporter sweeps
+- The trainer now emits `uncompiled_check`, `checkpoint_save_verify`, `reloaded_prequant_exact`, and `reloaded_int8_zlib_roundtrip_exact`, and the parser/status surfaces carry those through into metrics and run summaries
+- A fresh instrumented proof run on `proxy_p1_fast-20260319-185044-b42cf8f0` showed the trainer-side replay path is fine: `uncompiled_check_delta_bpb=+0.00056196`, `checkpoint_save_verify_max_abs_diff=0.0`, `reloaded_prequant_delta_bpb=+0.00056196`, and `reloaded_postquant_delta_bpb=+0.00057997`
+- But the standalone replay path is still broken on that same fresh checkpoint: `final_model.export_eval.json` replayed it at `1.78986763/1.79694755`, so the remaining blocker is now specifically a fresh-process reconstruction/export-eval bug rather than a raw checkpoint save bug
+- A second fresh proof run on `proxy_p1_fast-20260319-192237-39db664f` reproduced the same shape of failure directly on the original remote artifact: trainer-side reload stayed tight at `1.40549047/1.40989139`, while standalone replay still came back at `1.78922077/1.79489698`
+- RoPE `inv_freq` is now persisted in `final_model.pt`, and that still did not move the fresh-process replay failure, so the next suspect is not “missing RoPE basis in state_dict”; it is a deeper fresh-process model reconstruction or snapshot-import mismatch

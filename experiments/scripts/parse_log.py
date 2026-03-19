@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 
 NUMBER_RE = r"([\d.]+(?:[eE][+-]?\d+)?)"
+EXACT_METRIC_FIELDS = {
+    "uncompiled_check": "uncompiled_check",
+    "reloaded_prequant_exact": "reloaded_prequant",
+    "reloaded_int8_zlib_roundtrip_exact": "reloaded_postquant",
+}
 
 
 def parse_kv(line: str) -> dict[str, str]:
@@ -24,6 +29,26 @@ def load_manifest(log_path: Path) -> dict[str, object]:
         return json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+
+
+def parse_exact_eval(prefix: str, line: str) -> dict[str, float]:
+    m = re.match(rf"{prefix}\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}", line)
+    if not m:
+        return {}
+    values: dict[str, float] = {
+        "val_loss": float(m.group(1)),
+        "val_bpb": float(m.group(2)),
+    }
+    kv = parse_kv(line)
+    if "delta_loss" in kv:
+        values["delta_loss"] = float(kv["delta_loss"])
+    if "delta_bpb" in kv:
+        values["delta_bpb"] = float(kv["delta_bpb"])
+    if "eval_time" in kv and kv["eval_time"].endswith("ms"):
+        values["eval_time_ms"] = float(kv["eval_time"][:-2])
+    elif "eval_time" in kv:
+        values["eval_time_ms"] = float(kv["eval_time"])
+    return values
 
 
 def parse_log(text: str) -> dict[str, object]:
@@ -193,46 +218,65 @@ def parse_log(text: str) -> dict[str, object]:
                 result["final"]["train_tokens_seen"] = value
             continue
 
-        m = re.match(
-            rf"final_int8_zlib_roundtrip_exact\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}",
-            line,
-        )
-        if m:
-            saw_exact_roundtrip = True
-            result["final"]["postquant_val_loss"] = float(m.group(1))
-            result["final"]["postquant_val_bpb"] = float(m.group(2))
-            result["final"]["val_loss"] = float(m.group(1))
-            result["final"]["val_bpb"] = float(m.group(2))
-            continue
-
-        # Final roundtrip (non-exact, with eval_time)
-        m = re.match(
-            rf"final_int8_zlib_roundtrip\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}\s+eval_time:(\d+)ms",
-            line,
-        )
-        if m:
-            result["final"]["roundtrip_eval_time_ms"] = int(m.group(3))
-            # Don't overwrite exact values if already set
-            if "val_loss" not in result["final"]:
+        for prefix, field_prefix in EXACT_METRIC_FIELDS.items():
+            parsed_exact = parse_exact_eval(prefix, line)
+            if parsed_exact:
+                result["final"][f"{field_prefix}_val_loss"] = parsed_exact["val_loss"]
+                result["final"][f"{field_prefix}_val_bpb"] = parsed_exact["val_bpb"]
+                if "delta_loss" in parsed_exact:
+                    result["final"][f"{field_prefix}_delta_loss"] = parsed_exact["delta_loss"]
+                if "delta_bpb" in parsed_exact:
+                    result["final"][f"{field_prefix}_delta_bpb"] = parsed_exact["delta_bpb"]
+                if "eval_time_ms" in parsed_exact:
+                    result["final"][f"{field_prefix}_eval_time_ms"] = int(parsed_exact["eval_time_ms"])
+                break
+        else:
+            m = re.match(
+                rf"final_int8_zlib_roundtrip_exact\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}",
+                line,
+            )
+            if m:
+                saw_exact_roundtrip = True
                 result["final"]["postquant_val_loss"] = float(m.group(1))
                 result["final"]["postquant_val_bpb"] = float(m.group(2))
                 result["final"]["val_loss"] = float(m.group(1))
                 result["final"]["val_bpb"] = float(m.group(2))
-            continue
+                continue
 
-        m = re.match(
-            rf"quantization_delta_exact\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}",
-            line,
-        )
-        if m:
-            result["final"]["qgap_loss"] = float(m.group(1))
-            result["final"]["qgap_bpb"] = float(m.group(2))
-            kv = parse_kv(line)
-            if "train_tokens_seen" in kv:
-                value = int(float(kv["train_tokens_seen"]))
-                result["train_tokens_seen"] = value
-                result["final"]["train_tokens_seen"] = value
-            continue
+            # Final roundtrip (non-exact, with eval_time)
+            m = re.match(
+                rf"final_int8_zlib_roundtrip\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}\s+eval_time:(\d+)ms",
+                line,
+            )
+            if m:
+                result["final"]["roundtrip_eval_time_ms"] = int(m.group(3))
+                # Don't overwrite exact values if already set
+                if "val_loss" not in result["final"]:
+                    result["final"]["postquant_val_loss"] = float(m.group(1))
+                    result["final"]["postquant_val_bpb"] = float(m.group(2))
+                    result["final"]["val_loss"] = float(m.group(1))
+                    result["final"]["val_bpb"] = float(m.group(2))
+                continue
+
+            m = re.match(
+                rf"quantization_delta_exact\s+val_loss:{NUMBER_RE}\s+val_bpb:{NUMBER_RE}",
+                line,
+            )
+            if m:
+                result["final"]["qgap_loss"] = float(m.group(1))
+                result["final"]["qgap_bpb"] = float(m.group(2))
+                kv = parse_kv(line)
+                if "train_tokens_seen" in kv:
+                    value = int(float(kv["train_tokens_seen"]))
+                    result["train_tokens_seen"] = value
+                    result["final"]["train_tokens_seen"] = value
+                continue
+
+            m = re.match(rf"checkpoint_save_verify\s+max_abs_diff:{NUMBER_RE}\s+tensors_mismatched:(\d+)", line)
+            if m:
+                result["final"]["checkpoint_save_verify_max_abs_diff"] = float(m.group(1))
+                result["final"]["checkpoint_save_verify_tensors_mismatched"] = int(m.group(2))
+                continue
 
     # Derive run_id from config if available
     if "run_id" in result["config"]:
@@ -246,6 +290,26 @@ def parse_log(text: str) -> dict[str, object]:
         result["final"].setdefault(
             "qgap_loss",
             result["final"]["postquant_val_loss"] - result["final"]["prequant_val_loss"],
+        )
+    if "reloaded_prequant_val_bpb" in result["final"] and "prequant_val_bpb" in result["final"]:
+        result["final"].setdefault(
+            "replay_trust_prequant_delta_bpb",
+            result["final"]["reloaded_prequant_val_bpb"] - result["final"]["prequant_val_bpb"],
+        )
+    if "reloaded_prequant_val_loss" in result["final"] and "prequant_val_loss" in result["final"]:
+        result["final"].setdefault(
+            "replay_trust_prequant_delta_loss",
+            result["final"]["reloaded_prequant_val_loss"] - result["final"]["prequant_val_loss"],
+        )
+    if "reloaded_postquant_val_bpb" in result["final"] and "postquant_val_bpb" in result["final"]:
+        result["final"].setdefault(
+            "replay_trust_postquant_delta_bpb",
+            result["final"]["reloaded_postquant_val_bpb"] - result["final"]["postquant_val_bpb"],
+        )
+    if "reloaded_postquant_val_loss" in result["final"] and "postquant_val_loss" in result["final"]:
+        result["final"].setdefault(
+            "replay_trust_postquant_delta_loss",
+            result["final"]["reloaded_postquant_val_loss"] - result["final"]["postquant_val_loss"],
         )
     if "total_submission_bytes" in result["final"]:
         result["final"]["artifact_slack_bytes"] = 16_000_000 - int(result["final"]["total_submission_bytes"])

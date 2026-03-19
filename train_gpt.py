@@ -531,7 +531,9 @@ class Rotary(nn.Module):
     def __init__(self, dim: int, base: float = 10000.0):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # Persist the RoPE frequency basis so fresh-process checkpoint loads do not
+        # depend on reconstructing forward-relevant buffers from ambient config.
+        self.register_buffer("inv_freq", inv_freq)
         self._seq_len_cached = 0
         self._cos_cached: Tensor | None = None
         self._sin_cached: Tensor | None = None
@@ -730,6 +732,97 @@ class GPT(nn.Module):
 
 
 # -----------------------------
+# REPLAY DIAGNOSTICS
+# -----------------------------
+# These functions capture forward-pass-affecting state for comparing
+# in-process vs fresh-process model reconstruction.  Output as structured
+# DIAG: lines that can be diffed between training and export_eval logs.
+
+import json as _json
+
+
+def hyperparams_fingerprint(args: Hyperparameters, label: str = "hparams") -> None:
+    fields = [
+        "vocab_size", "num_layers", "model_dim", "num_heads", "num_kv_heads",
+        "mlp_mult", "tie_embeddings", "logit_softcap", "rope_base",
+        "qk_gain_init", "tied_embed_init_std", "train_seq_len", "val_batch_size",
+    ]
+    info: dict[str, object] = {f: getattr(args, f) for f in fields}
+    info["CONTROL_TENSOR_NAME_PATTERNS"] = list(CONTROL_TENSOR_NAME_PATTERNS)
+    info["INT8_KEEP_FLOAT_MAX_NUMEL"] = INT8_KEEP_FLOAT_MAX_NUMEL
+    info["INT8_CLIP_PERCENTILE"] = INT8_CLIP_PERCENTILE
+    print(f"DIAG:{label}:{_json.dumps(info, default=str)}")
+
+
+def model_fingerprint(model: nn.Module, label: str = "fingerprint") -> None:
+    info: dict[str, object] = {
+        "logit_softcap": model.logit_softcap,
+        "tie_embeddings": model.tie_embeddings,
+        "num_encoder_layers": model.num_encoder_layers,
+        "num_decoder_layers": model.num_decoder_layers,
+        "num_skip_weights": model.num_skip_weights,
+        "has_lm_head": model.lm_head is not None,
+    }
+    for i, block in enumerate(model.blocks):
+        a = block.attn
+        info[f"block{i}.heads"] = f"{a.num_heads}/{a.num_kv_heads}/{a.head_dim}"
+    params: dict[str, str] = {}
+    for name, p in model.named_parameters():
+        params[name] = (
+            f"dtype={p.dtype}|shape={list(p.shape)}|dev={p.device}"
+            f"|sum_abs={p.detach().float().abs().sum().item():.6f}"
+            f"|mean={p.detach().float().mean().item():.8f}"
+        )
+    info["params"] = params
+    bufs: dict[str, str] = {}
+    for name, b in model.named_buffers():
+        bufs[name] = (
+            f"dtype={b.dtype}|shape={list(b.shape)}|dev={b.device}"
+            f"|sum={b.float().sum().item():.8f}"
+        )
+    info["buffers"] = bufs
+    print(f"DIAG:{label}:{_json.dumps(info, default=str)}")
+
+
+@torch.no_grad()
+def diagnostic_forward(
+    model: nn.Module, seq_len: int, vocab_size: int,
+    device: torch.device, label: str = "diag_fwd",
+) -> None:
+    torch.manual_seed(42)
+    x = torch.randint(0, vocab_size, (1, seq_len), device=device)
+    y = torch.randint(0, vocab_size, (1, seq_len), device=device)
+    was_training = model.training
+    model.eval()
+    stats: dict[str, str] = {}
+    emb = model.tok_emb(x)
+    h = F.rms_norm(emb, (emb.size(-1),))
+    stats["emb"] = f"{h.float().mean().item():.8f}|{h.float().std().item():.8f}"
+    x0 = h.clone()
+    skips: list[Tensor] = []
+    for i in range(model.num_encoder_layers):
+        h = model.blocks[i](h, x0)
+        skips.append(h)
+        stats[f"enc{i}"] = f"{h.float().mean().item():.8f}|{h.float().std().item():.8f}"
+    for i in range(model.num_decoder_layers):
+        if skips:
+            h = h + model.skip_weights[i].to(dtype=h.dtype)[None, None, :] * skips.pop()
+        h = model.blocks[model.num_encoder_layers + i](h, x0)
+        stats[f"dec{i}"] = f"{h.float().mean().item():.8f}|{h.float().std().item():.8f}"
+    final = model.final_norm(h).reshape(-1, h.size(-1))
+    if model.tie_embeddings:
+        logits_proj = F.linear(final, model.tok_emb.weight)
+    else:
+        logits_proj = model.lm_head(final)
+    logits = model.logit_softcap * torch.tanh(logits_proj / model.logit_softcap)
+    loss = F.cross_entropy(logits.float(), y.reshape(-1), reduction="mean")
+    stats["logits"] = f"{logits.float().mean().item():.8f}|{logits.float().std().item():.8f}|loss={loss.item():.8f}"
+    if was_training:
+        model.train()
+    print(f"DIAG:{label}:{_json.dumps(stats)}")
+
+
+# -----------------------------
 # TRAINING
 # -----------------------------
 
@@ -738,6 +831,7 @@ def main() -> None:
 
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
+    hyperparams_fingerprint(args, "train_hparams")
     zeropower_via_newtonschulz5 = torch.compile(zeropower_via_newtonschulz5)
 
     # -----------------------------
@@ -1085,39 +1179,107 @@ def main() -> None:
     )
     train_tokens_seen = step * args.train_batch_tokens
 
+    def exact_eval(eval_model: nn.Module) -> tuple[float, float, int]:
+        torch.cuda.synchronize()
+        start = time.perf_counter()
+        val_loss, val_bpb = eval_val(
+            args,
+            eval_model,
+            rank,
+            world_size,
+            device,
+            grad_accum_steps,
+            val_tokens,
+            base_bytes_lut,
+            has_leading_space_lut,
+            is_boundary_token_lut,
+        )
+        torch.cuda.synchronize()
+        return val_loss, val_bpb, int(1000.0 * (time.perf_counter() - start))
+
+    def log_exact_eval(
+        label: str,
+        eval_model: nn.Module,
+        *,
+        reference: tuple[float, float] | None = None,
+        include_train_tokens_seen: bool = False,
+    ) -> tuple[float, float]:
+        val_loss, val_bpb, eval_time_ms = exact_eval(eval_model)
+        delta_suffix = ""
+        if reference is not None:
+            delta_suffix = (
+                f" delta_loss:{val_loss - reference[0]:.8f} "
+                f"delta_bpb:{val_bpb - reference[1]:.8f}"
+            )
+        train_tokens_suffix = f" train_tokens_seen:{train_tokens_seen}" if include_train_tokens_seen else ""
+        log0(
+            f"{label} val_loss:{val_loss:.8f} val_bpb:{val_bpb:.8f}"
+            f"{delta_suffix}{train_tokens_suffix} eval_time:{eval_time_ms}ms"
+        )
+        return val_loss, val_bpb
+
+    def log_checkpoint_save_verify(path: str, state_dict: dict[str, Tensor]) -> None:
+        if not master_process:
+            return
+        reloaded_state = torch.load(path, map_location="cpu")
+        max_abs_diff = 0.0
+        tensors_mismatched = 0
+        for name, tensor in state_dict.items():
+            reloaded_tensor = reloaded_state.get(name)
+            if reloaded_tensor is None or tensor.shape != reloaded_tensor.shape:
+                tensors_mismatched += 1
+                max_abs_diff = float("inf")
+                continue
+            if tensor.numel() == 0:
+                diff = 0.0
+            else:
+                diff = (tensor.detach().float().cpu() - reloaded_tensor.detach().float()).abs().max().item()
+            if diff > 0.0:
+                tensors_mismatched += 1
+            max_abs_diff = max(max_abs_diff, diff)
+        log0(
+            f"checkpoint_save_verify max_abs_diff:{max_abs_diff:.8e} "
+            f"tensors_mismatched:{tensors_mismatched}"
+        )
+
     # -----------------------------
     # SERIALIZATION + ROUNDTRIP VALIDATION
     # -----------------------------
     # Save the raw state (useful for debugging/loading in PyTorch directly), then always produce
     # the compressed int8+zlib artifact and validate the round-tripped weights.
 
-    torch.cuda.synchronize()
-    t_pre_eval = time.perf_counter()
-    pre_val_loss, pre_val_bpb = eval_val(
-        args,
+    pre_val_loss, pre_val_bpb = log_exact_eval(
+        "final_prequant_exact",
         model,
-        rank,
-        world_size,
-        device,
-        grad_accum_steps,
-        val_tokens,
-        base_bytes_lut,
-        has_leading_space_lut,
-        is_boundary_token_lut,
+        include_train_tokens_seen=True,
     )
-    torch.cuda.synchronize()
-    log0(
-        f"final_prequant_exact val_loss:{pre_val_loss:.8f} val_bpb:{pre_val_bpb:.8f} "
-        f"train_tokens_seen:{train_tokens_seen} eval_time:{1000.0 * (time.perf_counter() - t_pre_eval):.0f}ms"
-    )
+    if model is not base_model:
+        log_exact_eval(
+            "uncompiled_check",
+            base_model,
+            reference=(pre_val_loss, pre_val_bpb),
+        )
 
     if master_process:
-        torch.save(base_model.state_dict(), "final_model.pt")
+        raw_state_dict = base_model.state_dict()
+        torch.save(raw_state_dict, "final_model.pt")
+        log_checkpoint_save_verify("final_model.pt", raw_state_dict)
         model_bytes = os.path.getsize("final_model.pt")
         code_bytes = len(code.encode("utf-8"))
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
         log0(f"Total submission size: {model_bytes + code_bytes} bytes")
+    if distributed:
+        dist.barrier()
+    raw_state_dict = torch.load("final_model.pt", map_location="cpu")
+    base_model.load_state_dict(raw_state_dict, strict=True)
+    model_fingerprint(base_model, "train_reloaded")
+    diagnostic_forward(base_model, args.train_seq_len, args.vocab_size, device, "train_diag_fwd")
+    log_exact_eval(
+        "reloaded_prequant_exact",
+        base_model,
+        reference=(pre_val_loss, pre_val_bpb),
+    )
 
     quant_obj, quant_stats = quantize_state_dict_int8(base_model.state_dict())
     quant_buf = io.BytesIO()
@@ -1143,26 +1305,17 @@ def main() -> None:
         quant_blob_disk = f.read()
     quant_state = torch.load(io.BytesIO(zlib.decompress(quant_blob_disk)), map_location="cpu")
     base_model.load_state_dict(dequantize_state_dict_int8(quant_state), strict=True)
-    torch.cuda.synchronize()
-    t_qeval = time.perf_counter()
-    q_val_loss, q_val_bpb = eval_val(
-        args,
-        model,
-        rank,
-        world_size,
-        device,
-        grad_accum_steps,
-        val_tokens,
-        base_bytes_lut,
-        has_leading_space_lut,
-        is_boundary_token_lut,
-    )
-    torch.cuda.synchronize()
+    q_val_loss, q_val_bpb, q_eval_time_ms = exact_eval(model)
     log0(
         f"final_int8_zlib_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
-        f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
+        f"eval_time:{q_eval_time_ms:.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+    log_exact_eval(
+        "reloaded_int8_zlib_roundtrip_exact",
+        base_model,
+        reference=(q_val_loss, q_val_bpb),
+    )
     log0(
         f"quantization_delta_exact val_loss:{q_val_loss - pre_val_loss:.8f} "
         f"val_bpb:{q_val_bpb - pre_val_bpb:.8f} train_tokens_seen:{train_tokens_seen}"

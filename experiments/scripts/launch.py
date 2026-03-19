@@ -119,6 +119,16 @@ def compact_number(value: float | int | None, *, precision: int = 2) -> str:
     return f"{number:.{precision}f}{suffix}"
 
 
+def replay_delta(final: dict[str, Any], key: str, val_key: str, ref_key: str) -> float | None:
+    if final.get(key) is not None:
+        return float(final[key])
+    value = final.get(val_key)
+    reference = final.get(ref_key)
+    if value is None or reference is None:
+        return None
+    return float(value) - float(reference)
+
+
 def extract_progress(lines: list[str]) -> dict[str, Any]:
     latest_step: int | None = None
     latest_train_loss: float | None = None
@@ -229,6 +239,7 @@ def render_status(rows: list[dict[str, Any]]) -> str:
         ("Train", 8),
         ("PostBPB", 8),
         ("qgap", 8),
+        ("ReplayΔ", 8),
         ("StepMs", 7),
         ("Tok/s", 7),
         ("Slack", 7),
@@ -240,7 +251,7 @@ def render_status(rows: list[dict[str, Any]]) -> str:
         ("Hypothesis", 14),
         ("Failure", 20),
     ]
-    lines = [" ".join(f"{name:<{width}}" for name, width in headers), "-" * 178]
+    lines = [" ".join(f"{name:<{width}}" for name, width in headers), "-" * 187]
     now_epoch = time.time()
     for manifest in sorted(rows, key=lambda item: item.get("start_time_epoch", 0), reverse=True):
         status = str(manifest.get("status") or "")
@@ -258,6 +269,9 @@ def render_status(rows: list[dict[str, Any]]) -> str:
         )
         latest_val_bpb = final.get("val_bpb", progress["latest_val_bpb"])
         qgap_bpb = final.get("qgap_bpb")
+        replay_delta_bpb = replay_delta(
+            final, "reloaded_postquant_delta_bpb", "reloaded_postquant_val_bpb", "postquant_val_bpb"
+        )
         step_avg_ms = (
             train_steps[-1].get("step_avg_ms")
             if train_steps
@@ -281,6 +295,7 @@ def render_status(rows: list[dict[str, Any]]) -> str:
             f"{'' if latest_train_loss is None else f'{latest_train_loss:.4f}':<8}",
             f"{'' if latest_val_bpb is None else f'{latest_val_bpb:.4f}':<8}",
             f"{'' if qgap_bpb is None else f'{qgap_bpb:.4f}':<8}",
+            f"{'' if replay_delta_bpb is None else f'{replay_delta_bpb:+.4f}':<8}",
             f"{'' if step_avg_ms is None else f'{step_avg_ms:.1f}':<7}",
             f"{compact_number(tok_s):<7}",
             f"{compact_number(slack):<7}",

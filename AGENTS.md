@@ -4,7 +4,11 @@
 Core training entry points live at the repository root: `train_gpt.py` for CUDA and `train_gpt_mlx.py` for Apple Silicon MLX. Experiment orchestration lives under `experiments/`, with YAML configs in `experiments/configs/`, machine definitions in `experiments/machines.yaml`, automation scripts in `experiments/scripts/`, and infra tests in `experiments/scripts/tests/`. Dataset and tokenizer helpers live in `data/`. Reproducible submissions belong in `records/track_10min_16mb/` or `records/track_non_record_16mb/`, with one self-contained folder per run.
 
 ## Experiment Strategy & Tracking
-**Read `docs/tracker.md` first** to understand current progress. The full strategy is in `docs/experiment_plan_prd.md`. Track-level context (thesis, experiments, decision rules, learnings) lives in `docs/tracks/track_{a-f}_*.md`.
+`AGENTS.md` is for stable repository orientation only; it should not be treated as the source of current experiment state.
+
+- **Read `docs/tracker.md` first** to see current progress, next tasks, and what is blocked.
+- Read `docs/experiment_plan_prd.md` for the full strategy and promotion logic.
+- Read `docs/tracks/track_{a-f}_*.md` for per-track thesis, experiments, decision rules, and learnings.
 
 Key principles that govern all experiment work:
 - **Post-roundtrip is the only real metric.** Never promote on pre-quant improvement alone. Track `Δpq` (post-roundtrip delta vs baseline, negative=better) and `qgap` (post-quant minus pre-quant bpb, smaller=better).

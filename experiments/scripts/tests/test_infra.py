@@ -63,7 +63,11 @@ def write_metrics(
     qgap_bpb: float | None = None,
     artifact_slack_bytes: int = 123456,
     tok_s: float = 1_500_000.0,
+    uncompiled_check_delta_bpb: float | None = None,
+    reloaded_postquant_val_bpb: float | None = None,
 ) -> None:
+    prequant = prequant_val_bpb if prequant_val_bpb is not None else val_bpb - 0.01
+    reloaded_postquant = reloaded_postquant_val_bpb if reloaded_postquant_val_bpb is not None else None
     payload = {
         "run_id": run_id,
         "status": status,
@@ -73,7 +77,7 @@ def write_metrics(
         "final": {
             "val_bpb": val_bpb,
             "val_loss": val_loss,
-            "prequant_val_bpb": prequant_val_bpb if prequant_val_bpb is not None else val_bpb - 0.01,
+            "prequant_val_bpb": prequant,
             "qgap_bpb": qgap_bpb if qgap_bpb is not None else 0.01,
             "total_submission_bytes": 123456,
             "artifact_slack_bytes": artifact_slack_bytes,
@@ -81,6 +85,11 @@ def write_metrics(
             "stop_step": 123,
         },
     }
+    if uncompiled_check_delta_bpb is not None:
+        payload["final"]["uncompiled_check_delta_bpb"] = uncompiled_check_delta_bpb
+    if reloaded_postquant is not None:
+        payload["final"]["reloaded_postquant_val_bpb"] = reloaded_postquant
+        payload["final"]["reloaded_postquant_delta_bpb"] = reloaded_postquant - val_bpb
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -198,6 +207,36 @@ def test_cached_fineweb_defaults_to_full_train_split() -> None:
 def test_cached_fineweb_respects_explicit_train_shard_prefix() -> None:
     args = cached_fineweb.build_parser().parse_args(["--variant", "sp1024", "--train-shards", "80"])
     assert cached_fineweb.resolve_train_shards(args, 195) == 80
+
+
+def test_trainer_model_serializes_all_registered_buffers() -> None:
+    trainer_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_test", ROOT / "train_gpt.py")
+    assert trainer_spec is not None and trainer_spec.loader is not None
+    trainer = importlib.util.module_from_spec(trainer_spec)
+    trainer_spec.loader.exec_module(trainer)
+
+    model = trainer.GPT(
+        vocab_size=1024,
+        num_layers=9,
+        model_dim=512,
+        num_heads=8,
+        num_kv_heads=4,
+        mlp_mult=2,
+        tie_embeddings=True,
+        tied_embed_init_std=0.005,
+        logit_softcap=30.0,
+        rope_base=10000.0,
+        qk_gain_init=1.5,
+    ).bfloat16()
+    for module in model.modules():
+        if isinstance(module, trainer.CastedLinear):
+            module.float()
+    trainer.restore_low_dim_params_to_fp32(model)
+
+    state_keys = set(model.state_dict().keys())
+    missing_buffers = [name for name, _ in model.named_buffers() if name not in state_keys]
+
+    assert missing_buffers == []
 
 
 def test_validate_exporter_env_vars_are_allowlisted(tmp_path: Path) -> None:
@@ -434,6 +473,35 @@ def test_parse_derives_qgap_without_explicit_delta_line() -> None:
     assert parsed["final"]["artifact_slack_bytes"] == 15_997_952
 
 
+def test_parse_replay_trust_signals() -> None:
+    parsed = parse_log.parse_log(
+        "\n".join(
+            [
+                "final_prequant_exact val_loss:2.00000000 val_bpb:1.00000000 train_tokens_seen:1024 eval_time:1ms",
+                "uncompiled_check val_loss:2.40000000 val_bpb:1.25000000 delta_loss:0.40000000 delta_bpb:0.25000000 eval_time:3ms",
+                "checkpoint_save_verify max_abs_diff:0.00000000e+00 tensors_mismatched:0",
+                "reloaded_prequant_exact val_loss:2.30000000 val_bpb:1.20000000 delta_loss:0.30000000 delta_bpb:0.20000000 eval_time:4ms",
+                "Serialized model int8+zlib: 123 bytes (payload:45 raw_torch:67 payload_ratio:8.9x)",
+                "Total submission size int8+zlib: 1000 bytes",
+                "final_int8_zlib_roundtrip_exact val_loss:2.50000000 val_bpb:1.25000000",
+                "reloaded_int8_zlib_roundtrip_exact val_loss:2.60000000 val_bpb:1.35000000 delta_loss:0.10000000 delta_bpb:0.10000000 eval_time:5ms",
+                "quantization_delta_exact val_loss:0.50000000 val_bpb:0.25000000 train_tokens_seen:1024",
+            ]
+        )
+    )
+    final = parsed["final"]
+    assert final["uncompiled_check_val_bpb"] == pytest.approx(1.25)
+    assert final["uncompiled_check_delta_bpb"] == pytest.approx(0.25)
+    assert final["checkpoint_save_verify_max_abs_diff"] == pytest.approx(0.0)
+    assert final["checkpoint_save_verify_tensors_mismatched"] == 0
+    assert final["reloaded_prequant_val_bpb"] == pytest.approx(1.2)
+    assert final["reloaded_prequant_delta_bpb"] == pytest.approx(0.2)
+    assert final["reloaded_postquant_val_bpb"] == pytest.approx(1.35)
+    assert final["reloaded_postquant_delta_bpb"] == pytest.approx(0.1)
+    assert final["replay_trust_prequant_delta_bpb"] == pytest.approx(0.2)
+    assert final["replay_trust_postquant_delta_bpb"] == pytest.approx(0.1)
+
+
 def test_parse_failed_run() -> None:
     parsed = parse_log.parse_log("final_int8_zlib_roundtrip val_loss:2.0 val_bpb:1.2 eval_time:123ms")
     assert parsed["status"] == "failed"
@@ -456,6 +524,27 @@ def test_compare_single_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cap
     assert "Δpq" in output
     assert "qgap" in output
     assert "1.2300*" in output
+
+
+def test_compare_includes_replay_trust_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    write_metrics(
+        metrics_path,
+        run_id="solo",
+        val_bpb=1.23,
+        val_loss=2.34,
+        uncompiled_check_delta_bpb=0.25,
+        reloaded_postquant_val_bpb=1.33,
+    )
+    monkeypatch.setattr(sys, "argv", ["compare.py", str(metrics_path)])
+    compare.main()
+    output = capsys.readouterr().out
+    assert "EgrΔ" in output
+    assert "RldΔ" in output
+    assert "+0.2500" in output
+    assert "+0.1000" in output
 
 
 def test_compare_sorts_by_bpb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -707,7 +796,14 @@ def test_render_status_includes_rich_columns(tmp_path: Path, monkeypatch: pytest
     results_dir = tmp_path / "results"
     run_dir = results_dir / "run-1"
     run_dir.mkdir(parents=True)
-    write_metrics(run_dir / "metrics.json", run_id="run-1", val_bpb=1.22, val_loss=2.07, artifact_slack_bytes=9_350_400)
+    write_metrics(
+        run_dir / "metrics.json",
+        run_id="run-1",
+        val_bpb=1.22,
+        val_loss=2.07,
+        artifact_slack_bytes=9_350_400,
+        reloaded_postquant_val_bpb=1.32,
+    )
     monkeypatch.setattr(launch, "RESULTS_DIR", results_dir)
     output = launch.render_status(
         [
@@ -727,6 +823,7 @@ def test_render_status_includes_rich_columns(tmp_path: Path, monkeypatch: pytest
         ]
     )
     assert "Failure" in output
+    assert "ReplayΔ" in output
     assert "qgap" in output
     assert "Tok/s" in output
     assert "cuda_oom" in output

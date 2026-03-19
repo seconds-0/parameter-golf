@@ -158,6 +158,7 @@ def main() -> int:
     enable_math_sdp(False)
 
     runtime_args = trainer.Hyperparameters()
+    trainer.hyperparams_fingerprint(runtime_args, "replay_hparams")
     random.seed(runtime_args.seed)
     np.random.seed(runtime_args.seed)
     trainer.torch.manual_seed(runtime_args.seed)
@@ -200,6 +201,8 @@ def main() -> int:
 
     state_dict = trainer.torch.load(checkpoint_path, map_location="cpu")
     base_model.load_state_dict(state_dict, strict=True)
+    trainer.model_fingerprint(base_model, "replay_loaded")
+    trainer.diagnostic_forward(base_model, runtime_args.train_seq_len, runtime_args.vocab_size, device, "replay_diag_fwd")
 
     pre_val_loss, pre_val_bpb = trainer.eval_val(
         runtime_args,
