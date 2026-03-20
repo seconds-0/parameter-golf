@@ -1,6 +1,6 @@
 # Parameter Golf — Master Progress Tracker
 
-> **Read this first on resume.** Full strategy: `docs/experiment_plan_prd.md`. Track details: `docs/tracks/`.
+> **Read this first on resume.** Full strategy: `docs/experiment_plan_prd.md`. Track details: `docs/tracks/`. Composition rules: `docs/experiment_interactions.md`.
 
 ## Prerequisites (complete before experiments)
 
@@ -21,7 +21,7 @@
 | [x] | X-02 | P1 fast proxy config preset | experiments/configs/proxy_p1_fast.yaml |
 | [ ] | X-03 | P2 medium proxy config preset | experiments/configs/proxy_p2_medium.yaml |
 | [ ] | X-04 | P3 runtime rehearsal config preset | experiments/configs/proxy_p3_runtime.yaml |
-| [ ] | X-05 | Exporter-only eval utility (load final_model.pt, re-export, roundtrip) | experiments/scripts/export_eval.py |
+| [x] | X-05 | Exporter-only eval utility (load final_model.pt, re-export, roundtrip) | experiments/scripts/export_eval.py |
 | [ ] | X-06 | Tokenizer stats utility (bytes/token, fragmentation, vocab audit) | experiments/scripts/tokenizer_stats.py |
 | [ ] | X-07 | Promotion metadata fields in config_utils (phase, proxy_level, parent_run_id, etc.) | config_utils.py |
 
@@ -149,4 +149,11 @@
 - The fresh proof run `proxy_p1_fast-20260319-230602-1649fc2b` produced the first decisive root-cause evidence: live final prequant stayed healthy at `1.40158006`, but resetting the rotary caches before raw-checkpoint eval made the in-process reload jump to `1.79098528`, with block-0 DIAG changing immediately at `cos/sin`, `q_post_rope`, `attn_out`, and `enc0`
 - Fresh-process replay now matches that cache-cleared trainer path exactly from `cos/sin` onward: `export_eval` landed at `prequant_val_bpb=1.79098528` and `postquant_val_bpb=1.79751456`, and the block-0 payloads for trainer `train_reloaded_block0_cache_cleared` and replay `replay_loaded_block0` match field-for-field except that replay sees the cache already populated by its first probe
 - The numeric clue is specific: the “good” live rotary cache has `cos/sin` summary `0.27844450 / 0.16043766`, while a rebuilt cache lands at `0.27934727 / 0.16214436`; that rebuilt value matches the standalone replay exactly and also matches a local bf16 RoPE-table reconstruction much more closely than the live cache does
-- The next work in sequence is now a tight Rotary precision fix, not broader replay archaeology: make RoPE cache construction use a stable fp32 basis/rebuild path, add a regression that compares live-vs-rebuilt rotary tables, then rerun one `1xH100` proof to confirm `reloaded_prequant_exact` and standalone replay both return to the `~1.4016` regime
+- The Rotary fix is now in place: cache rebuilds use an fp32 basis, `inv_freq` stays fp32 across model casting, and new regressions prove cache rebuild invariance after reset
+- The proof rerun `proxy_p1_fast-20260319-234853-b1623493` closed the loop: live prequant landed at `1.40251948`, in-trainer reload landed at `1.40307901`, fresh-process replay landed at `1.40307901`, and the postquant replay path matched too at `1.40740286` vs trainer `1.40740379`
+- Replay and trainer now agree within noise on the saved raw/quantized artifacts: replay-vs-reloaded deltas are `+0.00000000` prequant and `-0.00000093` postquant, with matching `total_submission_bytes=11,290,179`
+- The block-0 DIAG fault line is gone after the fix: trainer `train_reloaded_block0_cache_cleared` and replay `replay_loaded_block0` now match on all non-cache fields, including `cos/sin`, `q_post_rope`, `attn_out`, and `enc0`
+- `X-05` is now trusted and complete, so Track B is unblocked for the first real exporter sweeps
+- The post-fix `E02` replay sanity gate also passed on the actual trusted baseline checkpoint via `e02_replay_sanity-20260319-190049`: replay landed at prequant `1.21973875` and postquant `1.22687865`, which is only `+0.00054486 / +0.00059058` away from the trusted `E02` metrics
+- That sanity replay also stayed on the expected exporter frontier: `qgap_bpb=0.00713990`, `total_submission_bytes=15,874,097`, and `artifact_slack_bytes=125,903`
+- The next work in sequence is now the real exporter-only experiments: `E03` clip-percentile star first, then `E04` keep-float threshold star, both against the trusted `E02` replay source
