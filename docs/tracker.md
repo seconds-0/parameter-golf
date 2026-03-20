@@ -54,9 +54,9 @@
 | [ ] | E07 | SP-768 P1 | P1 | A | E05 |
 | [ ] | E08 | SP-1536 P1 | P1 | A | E05 |
 | [ ] | E09 | Best tokenizer P2 (winner from E06-E08) | P2 | A | E06..E08 |
-| [ ] | E10 | Tied-embed LR star on tokenizer winner | P1 | C | E09 |
-| [ ] | E11 | Matrix/scalar LR star on tokenizer winner | P1 | C | E09 |
-| [ ] | E12 | Embedding norm penalty A/B | P1→P2 | C | E09 |
+| [ ] | E10 | Tied-embed LR star: test {0.03, 0.05, 0.08} | P1 | C | E09 |
+| [ ] | E11 | Matrix/scalar LR star: test MATRIX_LR ∈ {0.025, 0.04, 0.06} | P1 | C | E09 |
+| [ ] | E12 | Embedding norm penalty: A=L2 λ=0.01, B=max-norm clip to 95th pct | P1→P2 | C | E09 |
 | [ ] | E29 | Value embed gate: per-block scalar ve_gate_w (init=0), V += gate*tok_emb[:kv_dim] | P1 | E | E02 |
 | [ ] | E30 | Batch schedule: 131K tokens first 30% of steps, then 524K for remaining 70% | P1 | C | E02 |
 | [ ] | E34a | Polar Express drop-in (optimal polynomial NS replacement, ~50 lines) | P1 | C | E02 |
@@ -69,7 +69,8 @@
 |--------|-----|-------------|-------|-------|---------|
 | [ ] | E13 | Clamp-aware regularizer: λ * mean(max(0, \|W\|-clip)²), sweep λ ∈ {0.001,0.01,0.1} | P1→P2 | B | E03..E04 |
 | [ ] | E15 | Compose best exporter settings + best regularizer winner (composition) | P2 | B | E24,E33,E13 |
-| [ ] | E24 | Weight decay for export retention (cautious gated + fixed, sweep 0.1–1.6) | P1→P2 | B | E02 |
+| [ ] | E24a | Fixed L2 weight decay, sweep {0.1, 0.5, 1.0} | P1→P2 | B | E02 |
+| [ ] | E24b | Cautious gated decay, sweep {0.1, 0.5, 1.0} | P1→P2 | B | E02 |
 | [ ] | E33 | Range Reg R²: λ * mean(max-min per row), sweep λ ∈ {0.001,0.01,0.1} | P1→P2 | B | E02 |
 | [ ] | E14b | Quant noise injection: σ(t)=0.5*exp(-0.01t), delayed step 2000, ~2% overhead | P1 | B | E02 |
 | [ ] | E14a | STE fake-quantize all 2D matrices, delayed step 1000, ~10% overhead | P1 | B | E02 |

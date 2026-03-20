@@ -4,8 +4,8 @@
 In this small-vocab tied-embedding regime, the embedding matrix is unusually load-bearing. The separate TIED_EMBED_LR knob matters more than generic LR sweeps. Small, targeted optimizer stars (not grids) on the tokenizer winner can unlock cheap gains. Additionally, training schedule changes (batch size, logit processing) are zero-artifact-cost recipe improvements drawn from the [NanoGPT speedrun](../references/nanogpt_speedrun_techniques.md).
 
 ## Experiments
-- **E10**: Tied-embed LR star on tokenizer winner (3-point, ~0.3 H100-hrs)
-- **E11**: Matrix/scalar LR star on tokenizer winner (3-point, ~0.3 H100-hrs)
+- **E10**: Tied-embed LR star: test {0.03, 0.05, 0.08} on tokenizer winner (3-point, ~0.3 H100-hrs)
+- **E11**: Matrix/scalar LR star: test MATRIX_LR ∈ {0.025, 0.04, 0.06} on tokenizer winner (3-point, ~0.3 H100-hrs)
 - **E12**: Embedding norm penalty A/B
 - **E23**: EMA weight averaging at export (decay sweep: 0.999, 0.9999) — inspired by [Q Labs 10x blog](../references/qlabs_10x_data_efficiency.md). ~20 lines of code. Maintain shadow EMA weights during training, swap in at export time. Targets qgap reduction via smoother weights. Kill if qgap doesn't improve by ≥10% or val_bpb regresses by >0.002. **Complete, killed** — both tested decays catastrophically worsened the exported checkpoint on the P1 proxy.
 - **E28**: Asymmetric softcap — replace symmetric `30 * tanh(logits/30)` with separate caps for positive vs negative logits: `cap_pos * tanh(logits/cap_pos)` for logits > 0, `cap_neg * tanh(logits/cap_neg)` for logits ≤ 0. Test (cap_pos, cap_neg) ∈ {(30,20), (30,15), (20,30)}. Kill if Δpq ≥ +0.002. Ref: [NanoGPT speedrun 1.9](../references/nanogpt_speedrun_techniques.md#19-asymmetric-logit-rescale). **Unblocked** — depends only on E02.
