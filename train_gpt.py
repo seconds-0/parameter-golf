@@ -85,6 +85,12 @@ class Hyperparameters:
     aux_loss_range_reg = float(os.environ.get("AUX_LOSS_RANGE_REG", "0.0"))
     aux_loss_clamp_reg = float(os.environ.get("AUX_LOSS_CLAMP_REG", "0.0"))
 
+    # Batch schedule: staged batch size changes (format: "frac:tokens,frac:tokens")
+    batch_schedule = os.environ.get("BATCH_SCHEDULE", "")
+
+    # Beta2 cooldown: interpolate beta2 toward this value during warmdown (0 = disabled)
+    cooldown_beta2 = float(os.environ.get("COOLDOWN_BETA2", "0.0"))
+
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
@@ -866,6 +872,38 @@ def diagnostic_forward(
 
 
 # -----------------------------
+# BATCH SCHEDULE
+# -----------------------------
+
+def parse_batch_schedule(schedule_str: str) -> list[tuple[float, int]]:
+    """Parse a batch schedule string like '0.3:131072,1.0:524288' into sorted stages."""
+    if not schedule_str.strip():
+        return []
+    stages: list[tuple[float, int]] = []
+    for part in schedule_str.split(","):
+        frac_str, tokens_str = part.strip().split(":")
+        stages.append((float(frac_str), int(tokens_str)))
+    stages.sort(key=lambda s: s[0])
+    return stages
+
+
+def scheduled_batch_tokens(step: int, iterations: int, stages: list[tuple[float, int]], default: int) -> int:
+    """Return the batch token count for the current step based on the schedule.
+
+    Each stage is (frac, tokens) where frac is the upper fraction boundary.
+    Example: [(0.3, 131072), (1.0, 524288)] means use 131072 for steps 0-30%,
+    then 524288 for steps 30%-100%.
+    """
+    if not stages:
+        return default
+    frac = step / max(iterations, 1)
+    for stage_frac, stage_tokens in stages:
+        if frac < stage_frac:
+            return stage_tokens
+    return stages[-1][1]
+
+
+# -----------------------------
 # AUXILIARY REGULARIZATION LOSSES
 # -----------------------------
 
@@ -1103,6 +1141,11 @@ def main() -> None:
             f"aux_losses:weight_decay={args.aux_loss_weight_decay} "
             f"range_reg={args.aux_loss_range_reg} clamp_reg={args.aux_loss_clamp_reg}"
         )
+    batch_stages = parse_batch_schedule(args.batch_schedule)
+    if batch_stages:
+        log0(f"batch_schedule:{args.batch_schedule} stages:{batch_stages}")
+    if args.cooldown_beta2 > 0:
+        log0(f"cooldown_beta2:{args.cooldown_beta2}")
 
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
@@ -1191,12 +1234,13 @@ def main() -> None:
 
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         scale = lr_mul(step, elapsed_ms)
+        effective_batch_tokens = scheduled_batch_tokens(step, args.iterations, batch_stages, args.train_batch_tokens)
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
-            x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+            x, y = train_loader.next_batch(effective_batch_tokens, args.train_seq_len, grad_accum_steps)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
             if any_aux_loss:
@@ -1213,6 +1257,14 @@ def main() -> None:
         for opt in optimizers:
             for group in opt.param_groups:
                 group["lr"] = group["base_lr"] * scale
+
+        if args.cooldown_beta2 > 0 and scale < 1.0:
+            cooldown_frac = 1.0 - scale  # 0 at start of cooldown, 1 at end
+            new_beta2 = args.beta2 + cooldown_frac * (args.cooldown_beta2 - args.beta2)
+            for opt in optimizers:
+                if isinstance(opt, torch.optim.Adam):
+                    for group in opt.param_groups:
+                        group["betas"] = (group["betas"][0], new_beta2)
 
         if args.grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
