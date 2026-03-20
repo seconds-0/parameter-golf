@@ -37,12 +37,12 @@
 
 | Status | ID | Description | Proxy | Track | Depends |
 |--------|-----|-------------|-------|-------|---------|
-| [ ] | E03 | Exporter clip-percentile star (sweep INT8_CLIP_PERCENTILE) | Export+P1 | B | E02, P-02, X-05 |
-| [ ] | E04 | Keep-float threshold star (sweep INT8_KEEP_FLOAT_MAX_NUMEL) | Export+P1 | B | E02, P-02, X-05 |
-| [ ] | E23 | EMA weight averaging at export (decay sweep: 0.999, 0.9999) | P1 | C | E02 |
-| [ ] | E27 | Document-aligned batching (respect EOS boundaries in data loader) | P1 | F | E02 |
-| [ ] | E28 | Asymmetric logit rescale (directional scaling beyond softcap) | P1 | C | E02 |
-| [ ] | E32 | WSD LR schedule (Warmup-Stable-Decay replacing cosine warmdown) | P1 | C | E02 |
+| [x] | E03 | Exporter clip-percentile star (sweep INT8_CLIP_PERCENTILE) | Export+P1 | B | E02, P-02, X-05 |
+| [x] | E04 | Keep-float threshold star (sweep INT8_KEEP_FLOAT_MAX_NUMEL) | Export+P1 | B | E02, P-02, X-05 |
+| [x] | E23 | EMA weight averaging at export (decay sweep: 0.999, 0.9999) | P1 | C | E02 |
+| [x] | E27 | Document-aligned batching on published BOS-delimited shards | P1 | F | E02 |
+| [ ] | E28 | Asymmetric softcap: separate cap_pos/cap_neg, test (30,20),(30,15),(20,30) | P1 | C | E02 |
+| [x] | E32 | WSD LR schedule (Warmup-Stable-Decay replacing baseline warmdown) | P1 | C | E02 |
 | [ ] | E35 | Higher β₂ during cooldown (0.97-0.99 in decay phase) | P1 | C | E02 |
 
 ## Phase 2: Tokenizer First, Then Recipe
@@ -57,30 +57,27 @@
 | [ ] | E10 | Tied-embed LR star on tokenizer winner | P1 | C | E09 |
 | [ ] | E11 | Matrix/scalar LR star on tokenizer winner | P1 | C | E09 |
 | [ ] | E12 | Embedding norm penalty A/B | P1→P2 | C | E09 |
-| [ ] | E29 | Value embeddings with gating (mix input embeds into attention values) | P1 | E | E02 |
-| [ ] | E30 | Batch size schedule (small→large over training) | P1 | C | E02 |
-| [ ] | E34 | Turbo-Muon (AOL spectral preconditioning for faster ortho) | P1 | C | E02 |
+| [ ] | E29 | Value embed gate: per-block scalar ve_gate_w (init=0), V += gate*tok_emb[:kv_dim] | P1 | E | E02 |
+| [ ] | E30 | Batch schedule: 131K tokens first 30% of steps, then 524K for remaining 70% | P1 | C | E02 |
 
 ## Phase 3: Export-Aware Training
 
 | Status | ID | Description | Proxy | Track | Depends |
 |--------|-----|-------------|-------|-------|---------|
-| [ ] | E13 | Clamp-aware row-outlier regularizer | P1→P2 | B | E03..E04 |
-| [ ] | E14 | QAT-lite on selected weights | P1 | B | E03..E04 |
-| [ ] | E15 | Best exporter + best export-aware trick composed | P2 | B | E13 or E14 |
+| [ ] | E13 | Clamp-aware regularizer: λ * mean(max(0, \|W\|-clip)²), sweep λ ∈ {0.001,0.01,0.1} | P1→P2 | B | E03..E04 |
+| [ ] | E15 | Compose best exporter settings + best regularizer winner (composition) | P2 | B | E24,E33,E13 |
 | [ ] | E24 | Weight decay for export retention (cautious gated + fixed, sweep 0.1–1.6) | P1→P2 | B | E02 |
-| [ ] | E33 | Range Regularization R² for quantization robustness (distribution shape) | P1→P2 | B | E02 |
+| [ ] | E33 | Range Reg R²: λ * mean(max-min per row), sweep λ ∈ {0.001,0.01,0.1} | P1→P2 | B | E02 |
 
 ## Phase 4: Byte-Efficient Capacity Trades
 
 | Status | ID | Description | Proxy | Track | Depends |
 |--------|-----|-------------|-------|-------|---------|
 | [ ] | E16 | KV-head rebudget (4→2) | P1+P3 | D | E02 |
-| [ ] | E17 | KV-head + width rebudget | P1→P3→P2 | D | E16 |
+| [ ] | E17 | KV-head + width rebudget (composition: reinvest E16 savings) | P1→P3→P2 | D | E16 |
 | [ ] | E18 | Layer sharing (6/5/4 unique layers looped to 9-12 effective) | P1 | E | E02 |
 | [ ] | E25 | SwiGLU activation replacing ReLU² (matched param budget) | P1 | E | E02 |
-| [ ] | E26 | Layer sharing + SwiGLU rebudget combo | P1→P2 | E | E18, E25 |
-| [ ] | E31 | Multi-token prediction (training-only extra heads, discard at export) | P1→P2 | E | E02 |
+| [ ] | E26 | Layer sharing + SwiGLU rebudget (composition: E18 savings → SwiGLU hidden=704) | P1→P2 | E | E18, E25 |
 
 ## Phase 5: Composition and Promotion
 
@@ -110,50 +107,33 @@
 
 - Conservative plan: ~12-15 H100-hours total
 - Phase caps: P0 10%, P1 25%, P2 35%, P3 20%, P4 10% reserved
-- Current spend: ~$6.20
+- Current spend: ~$9.50
+
+## Ideas to Explore (not yet precise enough for a kill-rule experiment)
+
+| ID | Idea | Why not ready | Promote when |
+|----|------|--------------|-------------|
+| E14 | QAT-lite (int8 STE during training) | Broad design space: which weights, per-row vs per-tensor, phase-in schedule | After E24/E33 results inform which QAT variant matters |
+| E31 | Multi-token prediction (training-only heads) | Many hyperparameters: head count, positions, loss weighting, schedule | After simpler recipe wins (E35, E28, E30) are resolved |
+| E34 | Turbo-Muon (AOL spectral preconditioning) | Implementation availability unknown; research task to port | If clean implementation found or paper code released |
 
 ## Current State
 
-- `E00` passed on `proxy_p0_smoke-20260319-082117-62aaaea6`
-- `E00` reference metrics: postquant `val_bpb=2.59277612`, prequant `val_bpb=2.58420195`, `qgap_bpb=0.00857417`
-- `E00` artifact result: `total_submission_bytes=6,649,600`, `artifact_slack_bytes=9,350,400`
-- `E00` throughput result: `tok_s=1.58M`, `train_tokens_seen=71,303,168`, `step_avg_ms=331.47`
-- First failed smoke exposed a launcher bug: `run` was defaulting to `8` GPUs on a `1xH100` target
-- Second failed smoke exposed a missing Triton toolchain precondition (`python3.11-dev`) and an overly aggressive watchdog stall rule
-- Exporter controls now exposed: `INT8_CLIP_PERCENTILE`, `INT8_KEEP_FLOAT_MAX_NUMEL`, `CONTROL_TENSOR_NAME_PATTERNS`, and `INT8_KEEP_FLOAT_FP32_NAME_PATTERNS`
-- Exporter-only exact roundtrip utility now exists at `experiments/scripts/export_eval.py`
-- `E01` passed on the successful seed pair `phase0_e01_seed1337-20260319-085619-0bcbed04` and `phase0_e01_seed2024-20260319-090404-51ce3bc4`
-- `E01` mean postquant `val_bpb=1.38512509`, spread `0.00278616`, mean prequant `val_bpb=1.38263008`, mean `qgap_bpb=0.00249501`
-- `E01` throughput/slack baseline: `step_avg_ms≈336.8`, `tok_s≈1.56M`, `artifact_slack_bytes≈3.99M`
-- The first `E01` attempts failed because a fresh Vast host came up on `Python 3.11.0rc1`; switching the box to `Python 3.11.15` fixed TorchInductor stability
-- Fresh `8xH100` bring-up exposed two more harness issues that are now fixed: preflight/runtime now prefer the shared repo `.venv/bin/python` on remote hosts, and `data/cached_challenge_fineweb.py` now defaults to the full published train split instead of silently stopping at `80` train shards
-- `E02` passed on `baseline_repro-20260319-093041-82dade88`
-- `E02` reference metrics: postquant `val_bpb=1.22628807`, prequant `val_bpb=1.21919389`, `qgap_bpb=0.00709417`
-- `E02` artifact/runtime result: `total_submission_bytes=15,861,240`, `artifact_slack_bytes=138,760`, `step_avg_ms=43.55`, `tok_s=12.04M`, `train_tokens_seen=7,224,164,352`
-- `E02` clears the reproduction gate: it is `+0.00192237` vs the published `1.22436570`, with artifact size only `2,249` bytes smaller than the published `15,863,489`
-- `export_eval.py` is now stricter and safer: it can replay from a checkpoint's neighboring `manifest.json` + `train_gpt.py` snapshot, it scrubs ambient trainer env vars before import, and it no longer overwrites `final_model.int8.ptz` by default
-- The `X-05` blocker is deeper than config/env drift. A fresh 1xH100 replay of the trusted `E02` checkpoint still produced `prequant_val_bpb=1.81346210` and `postquant_val_bpb=1.82621440` even when using the run's own manifest env and trainer snapshot
-- The same raw-checkpoint replay failure shows up on the 1xH100 `E01` control artifact: `phase0_e01_seed1337-20260319-085619-0bcbed04/final_model.pt` replayed at `prequant_val_bpb=1.79180195` and `postquant_val_bpb=1.79691088` instead of the trusted in-run `1.38394218/1.38651817`
-- That means `X-05` is not just an exporter utility bug: the saved `final_model.pt` artifacts do not currently reproduce the live end-of-run metrics, so Track B stays blocked until the trainer-side serialization path is debugged
-- The trainer now emits replay-trust proof signals at the end of a run: `uncompiled_check`, `checkpoint_save_verify`, `reloaded_prequant_exact`, and `reloaded_int8_zlib_roundtrip_exact`
-- `parse_log.py`, `compare.py`, and `launch.py status` now surface those replay-trust signals directly, so the next real run can tell us whether the gap is compiled-vs-eager, save/load drift, or both
-- A second fresh instrumented P1 proof run succeeded on `proxy_p1_fast-20260319-192237-39db664f`: in-trainer replay trust was again good, with `uncompiled_check_delta_bpb=+0.00056740`, `checkpoint_save_verify_max_abs_diff=0.0`, `reloaded_prequant_delta_bpb=+0.00056740`, and `reloaded_postquant_delta_bpb=+0.00057580`
-- The checkpoint now explicitly serializes RoPE `inv_freq`, so the remaining mismatch is no longer explainable as “forward-relevant buffers were missing from state_dict`
-- Even on the original remote artifact, standalone fresh-process replay is still badly wrong: `final_model.export_eval.json` landed at `prequant_val_bpb=1.78922077` and `postquant_val_bpb=1.79489698` instead of the trainer-side `1.40549047/1.40989139`
-- A fresh DIAG run on `proxy_p1_fast-20260319-204141-603684f1` narrowed the bug again: `train_hparams == replay_hparams` and `train_reloaded == replay_loaded`, so the mismatch is not config, tensor values, dtypes, or serialized buffers
-- The first deterministic forward mismatch is at `enc0`, right after the shared embedding path: `emb` matches exactly, but `enc0` diverges (`-0.04076016|3.49975801` vs `-0.04143078|3.48918056`)
-- A fresh eager model and a fresh `torch.compile(...)`d model produce the same replay-side forward trace, so the active blocker is not “replay forgot to compile”; it is hidden same-process runtime state inside the first block path
-- The bughunt surface is now deeper and symmetric on both sides: trainer and replay logs emit block-0 DIAG probes for `attn_norm`, `q/k` pre/post RoPE, rotary cache state, `attn_out`, `mlp_out`, and `enc0`, plus cache-cleared and cache-prewarmed variants
-- A small helper now exists at `experiments/scripts/compare_diag.py` to diff `DIAG:*` lines and report the first divergent field across trainer and replay logs
-- Local verification is green after this instrumentation tranche: `make test` passes with `55` tests, `py_compile` passes for the touched scripts, and `make validate CONFIG=experiments/configs/proxy_p1_fast.yaml` still passes
-- The fresh proof run `proxy_p1_fast-20260319-230602-1649fc2b` produced the first decisive root-cause evidence: live final prequant stayed healthy at `1.40158006`, but resetting the rotary caches before raw-checkpoint eval made the in-process reload jump to `1.79098528`, with block-0 DIAG changing immediately at `cos/sin`, `q_post_rope`, `attn_out`, and `enc0`
-- Fresh-process replay now matches that cache-cleared trainer path exactly from `cos/sin` onward: `export_eval` landed at `prequant_val_bpb=1.79098528` and `postquant_val_bpb=1.79751456`, and the block-0 payloads for trainer `train_reloaded_block0_cache_cleared` and replay `replay_loaded_block0` match field-for-field except that replay sees the cache already populated by its first probe
-- The numeric clue is specific: the “good” live rotary cache has `cos/sin` summary `0.27844450 / 0.16043766`, while a rebuilt cache lands at `0.27934727 / 0.16214436`; that rebuilt value matches the standalone replay exactly and also matches a local bf16 RoPE-table reconstruction much more closely than the live cache does
-- The Rotary fix is now in place: cache rebuilds use an fp32 basis, `inv_freq` stays fp32 across model casting, and new regressions prove cache rebuild invariance after reset
-- The proof rerun `proxy_p1_fast-20260319-234853-b1623493` closed the loop: live prequant landed at `1.40251948`, in-trainer reload landed at `1.40307901`, fresh-process replay landed at `1.40307901`, and the postquant replay path matched too at `1.40740286` vs trainer `1.40740379`
-- Replay and trainer now agree within noise on the saved raw/quantized artifacts: replay-vs-reloaded deltas are `+0.00000000` prequant and `-0.00000093` postquant, with matching `total_submission_bytes=11,290,179`
-- The block-0 DIAG fault line is gone after the fix: trainer `train_reloaded_block0_cache_cleared` and replay `replay_loaded_block0` now match on all non-cache fields, including `cos/sin`, `q_post_rope`, `attn_out`, and `enc0`
-- `X-05` is now trusted and complete, so Track B is unblocked for the first real exporter sweeps
-- The post-fix `E02` replay sanity gate also passed on the actual trusted baseline checkpoint via `e02_replay_sanity-20260319-190049`: replay landed at prequant `1.21973875` and postquant `1.22687865`, which is only `+0.00054486 / +0.00059058` away from the trusted `E02` metrics
-- That sanity replay also stayed on the expected exporter frontier: `qgap_bpb=0.00713990`, `total_submission_bytes=15,874,097`, and `artifact_slack_bytes=125,903`
-- The next work in sequence is now the real exporter-only experiments: `E03` clip-percentile star first, then `E04` keep-float threshold star, both against the trusted `E02` replay source
+- Replay and training trust are restored end to end. `E02` reproduced the published baseline on `baseline_repro-20260319-093041-82dade88` at postquant `val_bpb=1.22628807`, prequant `val_bpb=1.21919389`, `qgap_bpb=0.00709417`, `total_submission_bytes=15,861,240`, and `step_avg_ms=43.55`.
+- `X-05` is complete and trusted. The post-fix replay sanity bundle `e02_replay_sanity-20260319-190049` replayed the trusted `E02` checkpoint at prequant `1.21973875` and postquant `1.22687865`, only `+0.00054486 / +0.00059058` away from the in-run `E02` metrics.
+- `E03` and `E04` are complete and flat on the trusted baseline checkpoint. `e03_clip_star-20260319-190645` found no clip-percentile win, and `e04_keep_float_star-20260319-191446` found no keep-float threshold win worth promoting under the byte cap.
+- `E27` is now complete and killed on the current published BOS-delimited shards. The paired same-host P1 bundle `phase1_e27_control_p1-20260320-155905-eb77f1a0` vs `phase1_e27_doc_aligned_p1-20260320-160818-f96fe403` regressed post-roundtrip from `1.41199216` to `1.52791342` (`Δpq=+0.11592126`), worsened `qgap` from `0.00408529` to `0.01193720`, and slowed step time from `416.29 ms` to `640.23 ms` (`+53.8%`). The loader only supervised `69.17%` of target positions on the published shards, so this is not an active baseline modifier.
+- `E23` is now complete and killed. The matched same-host P1 control `phase1_e23_control_p1-20260320-163308-38d0b485` landed at postquant `1.38639890` with `qgap=0.00272267`. The EMA export candidates were dramatically worse despite healthy live training metrics: `phase1_e23_ema0999_p1-20260320-164244-1b5abd14` landed at `2.03365982` (`Δpq=+0.64726092`, `qgap=0.00562494`), and `phase1_e23_ema09999_p1-20260320-165137-f8faa3a1` landed at `5.45891420` (`Δpq=+4.07251530`, `qgap=0.03394086`). Both live prequant checks stayed near baseline before the EMA swap, so this branch failed specifically at the export-smoothed snapshot, not in the training path.
+- `E32` is now complete and promoted. The matched same-host P1 control `phase1_e32_control_p1-20260320-172313-5aaa1c50` landed at postquant `1.46474630`, prequant `1.45614906`, and `qgap=0.00859724` with `step_avg_ms=557.65`. The WSD candidate `phase1_e32_wsd_p1-20260320-173257-a73c389c` improved to postquant `1.44033240`, prequant `1.43925826`, and `qgap=0.00107415`, for `Δpq=-0.02441390`, `Δpre=-0.01689080`, and `Δqgap=-0.00752309`, while step time only rose to `568.16 ms` (`+1.88%`). This is a clear P1 promotion and makes WSD the active base schedule for the next recipe follow-up.
+- Static exporter-only tuning is therefore exhausted for this checkpoint. If we stay in Track B, the next concrete branch is `E24` weight decay for export retention, followed later by `E33` or `E13` one at a time.
+- The best overall next cheap tranche is now `E35` on top of the promoted WSD base, then `E28` asymmetric logit rescale. If we choose to push Track B next instead, `E24` is the right branch.
+- Tokenizer work is still blocked on `X-06` then `E05`, and tokenizer-dependent recipe stars `E10`-`E12` remain blocked on `E09`.
+
+## Recent Learnings
+
+- The early harness failures were worth fixing before research: smoke runs exposed the wrong-GPU-count default, a missing Triton toolchain precondition, an over-eager watchdog, and a remote interpreter mismatch between bare `python3` and the shared repo `.venv`.
+- The replay bug was model-side, not exporter-side. Fresh-process replay only became trustworthy after making RoPE cache rebuilds precision-stable in fp32 and proving the fix with trainer-side reload checks plus block-0 DIAG comparisons.
+- Exporter controls are now fully harnessed via env vars, replay is safe and reproducible, and the exporter-only stars established a useful negative result: clip percentile and keep-float threshold are not where the next meaningful win is hiding for this baseline checkpoint.
+- `E27` was worth testing, but the current shard format matters: using BOS-delimited document alignment without regenerating data or adding a denser packing scheme left roughly `31%` of target positions ignored, which overwhelmed any hoped-for boundary-respect gain and makes this branch a clear kill on today's published dataset.
+- `E23` was also worth testing because it cleanly separated live training quality from exported-model quality. On this short P1 proxy, both EMA decays left the live prequant path near baseline but made the exported checkpoint catastrophically worse, which is a strong sign that naive long-horizon export-only EMA is the wrong fit for this regime as implemented.
+- `E32` is the first strong positive result in the cheap independent tranche: WSD did not just shave `qgap`; it improved both prequant and post-roundtrip quality materially on a matched same-host P1 run, which is exactly the profile we want before layering anything on top.

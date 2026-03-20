@@ -7,11 +7,11 @@ In this small-vocab tied-embedding regime, the embedding matrix is unusually loa
 - **E10**: Tied-embed LR star on tokenizer winner (3-point, ~0.3 H100-hrs)
 - **E11**: Matrix/scalar LR star on tokenizer winner (3-point, ~0.3 H100-hrs)
 - **E12**: Embedding norm penalty A/B
-- **E23**: EMA weight averaging at export (decay sweep: 0.999, 0.9999) — inspired by [Q Labs 10x blog](../references/qlabs_10x_data_efficiency.md). ~20 lines of code. Maintain shadow EMA weights during training, swap in at export time. Targets qgap reduction via smoother weights. Kill if qgap doesn't improve by ≥10% or val_bpb regresses by >0.002. **Unblocked** — depends only on E02, uses in-process roundtrip (not X-05).
-- **E28**: Asymmetric logit rescale — different scaling for positive vs negative logits beyond the symmetric tanh softcap (30.0). Speedrun record 41 showed measurable gain. Near-zero artifact cost (1-2 extra scalars). Kill if Δpq ≥ +0.002. Ref: [NanoGPT speedrun 1.9](../references/nanogpt_speedrun_techniques.md#19-asymmetric-logit-rescale). **Unblocked** — depends only on E02.
-- **E30**: Batch size schedule — start with smaller batches (more gradient updates early), increase to full size later. Speedrun record 37 (2.358→2.203 min). Zero artifact cost. Modify `grad_accum_steps` at iteration thresholds. Kill if final val_bpb regresses by >0.003. Ref: [NanoGPT speedrun 1.3](../references/nanogpt_speedrun_techniques.md#13-batch-size-schedule). **Unblocked** — depends only on E02.
-- **E32**: WSD LR schedule — Warmup-Stable-Decay replacing cosine warmdown. MiniCPM (arXiv:2404.06395) + ICLR 2025 showed WSD outperforms cosine. Three phases: 1% warmup (~140 steps), 75% stable (~10,335 steps), 24% decay (~3,305 steps). Zero artifact cost. Kill if val_bpb regresses >0.003 vs cosine. Ref: [small model landscape](../references/small_model_optimization_landscape.md#1-wsd-learning-rate-schedule-minicpm--tsinghua). **Unblocked** — depends only on E02.
-- **E34**: Turbo-Muon — AOL spectral preconditioning for Muon optimizer. arXiv:2502.16982 claims 2.8x orthogonalization speedup. Could reduce our 5 Newton-Schulz steps to 3-4, giving more training steps in 10 min. Zero artifact cost. Kill if quality degrades or step time doesn't improve. Ref: [small model landscape](../references/small_model_optimization_landscape.md#3-turbo-muon-aol-spectral-preconditioning). **Unblocked** — depends only on E02.
+- **E23**: EMA weight averaging at export (decay sweep: 0.999, 0.9999) — inspired by [Q Labs 10x blog](../references/qlabs_10x_data_efficiency.md). ~20 lines of code. Maintain shadow EMA weights during training, swap in at export time. Targets qgap reduction via smoother weights. Kill if qgap doesn't improve by ≥10% or val_bpb regresses by >0.002. **Complete, killed** — both tested decays catastrophically worsened the exported checkpoint on the P1 proxy.
+- **E28**: Asymmetric softcap — replace symmetric `30 * tanh(logits/30)` with separate caps for positive vs negative logits: `cap_pos * tanh(logits/cap_pos)` for logits > 0, `cap_neg * tanh(logits/cap_neg)` for logits ≤ 0. Test (cap_pos, cap_neg) ∈ {(30,20), (30,15), (20,30)}. Kill if Δpq ≥ +0.002. Ref: [NanoGPT speedrun 1.9](../references/nanogpt_speedrun_techniques.md#19-asymmetric-logit-rescale). **Unblocked** — depends only on E02.
+- **E30**: Batch size schedule — two-stage: `TRAIN_BATCH_TOKENS=131072` (¼ baseline) for the first 30% of steps, then `524288` (baseline) for the remaining 70%. Implemented by changing `grad_accum_steps` at the iteration threshold. More gradient updates early = faster initial learning. Kill if Δpq ≥ +0.003. Ref: [NanoGPT speedrun 1.3](../references/nanogpt_speedrun_techniques.md#13-batch-size-schedule). **Unblocked** — depends only on E02.
+- **E32**: WSD LR schedule — Warmup-Stable-Decay replacing the current baseline warmdown path. MiniCPM (arXiv:2404.06395) + ICLR 2025 showed WSD outperforms cosine-like schedules. Three phases: 1% warmup, 75% stable, 24% cosine decay. Zero artifact cost. Kill if val_bpb regresses >0.003 vs the matched baseline schedule. Ref: [small model landscape](../references/small_model_optimization_landscape.md#1-wsd-learning-rate-schedule-minicpm--tsinghua). **Complete, promoted** — strong same-host P1 win.
+- **E34**: _Moved to Ideas to Explore_ — Turbo-Muon (AOL spectral preconditioning) requires porting research code; implementation availability unknown. Promote if clean implementation found.
 - **E35**: Higher β₂ during cooldown — increase Adam β₂ from 0.95 to 0.97-0.99 during the LR decay phase. arXiv:2508.01483 showed this improves final val loss. ~3 lines of code. Can combine with E32 (WSD) or existing cosine warmdown. Kill if val_bpb regresses >0.001. **Unblocked** — depends only on E02.
 
 ## Key Metrics
@@ -25,7 +25,19 @@ In this small-vocab tied-embedding regime, the embedding matrix is unusually loa
 - Do NOT run the 15-config LR grid — it's explicitly the wrong approach per the PRD
 
 ## Status
-Not started. Depends on: E09 (tokenizer winner selected).
+Partially unblocked. Tokenizer-dependent recipe work `E10`-`E12` still depends on `E09` (tokenizer winner selected), while the cheap side experiments `E28`, `E30`, `E34`, and `E35` remain unblocked by `E02`. `E23` is complete and killed, and `E32` is now complete and promoted as the active base schedule.
+
+The recommended next Track C order is:
+- `E35` on top of the promoted WSD base schedule
+- `E28` asymmetric logit rescale
+
+`E30` and `E34` remain valid `E02`-unblocked side branches, but they are not the current highest-priority cheap tranche.
 
 ## Learnings
-(Updated as experiments complete)
+- `E23` produced a clean negative result in the matched same-host P1 bundle: control `phase1_e23_control_p1-20260320-163308-38d0b485` landed at postquant `1.38639890`, while `EMA_DECAY=0.999` landed at `2.03365982` and `EMA_DECAY=0.9999` landed at `5.45891420`
+- The failure mode is informative: both EMA runs kept the live prequant path near baseline before the EMA swap (`1.38512695` and `1.38464865`), so the branch failed specifically because the export-time EMA snapshot was bad, not because EMA destabilized training itself
+- `EMA_DECAY=0.999` already fails the Track C kill rule badly (`Δpq=+0.64726092`, `qgap=0.00562494` vs control `0.00272267`) and `0.9999` is much worse (`Δpq=+4.07251530`, `qgap=0.03394086`)
+- Runtime is not the reason for the kill: step time stayed near the control (`341.05 ms` and `339.15 ms` vs `337.97 ms`), so the branch should be considered conceptually wrong for this proxy rather than merely too expensive
+- `E32` produced a strong same-host P1 win: control `phase1_e32_control_p1-20260320-172313-5aaa1c50` landed at postquant `1.46474630`, while WSD `phase1_e32_wsd_p1-20260320-173257-a73c389c` improved to `1.44033240`
+- The win is broad, not a qgap-only fluke: WSD improved prequant by `-0.01689080`, post-roundtrip by `-0.02441390`, and qgap by `-0.00752309`
+- Step time moved only modestly (`557.65 ms` → `568.16 ms`, `+1.88%`), which is small enough that WSD should become the active base schedule for the next Track C follow-up rather than being treated as a fragile special case

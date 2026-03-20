@@ -6,11 +6,11 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 ## Experiments
 - **E03**: Exporter clip-percentile star (sweep INT8_CLIP_PERCENTILE)
 - **E04**: Keep-float threshold star (sweep INT8_KEEP_FLOAT_MAX_NUMEL)
-- **E13**: Clamp-aware row-outlier regularizer
-- **E14**: QAT-lite on selected weights
-- **E15**: Best exporter + best export-aware trick composed
+- **E13**: Clamp-aware regularizer — add `λ * mean(max(0, |W_ij| - clip_threshold_i)²)` per 2D weight matrix to the training loss, where `clip_threshold_i` is the per-row int8 clip boundary. Sweep λ ∈ {0.001, 0.01, 0.1}. Kill if Δpq ≥ +0.004 or step time >8%.
+- **E15**: Compose best exporter settings + best regularizer winner (composition step). Gate: run only after E24/E33/E13 have P1 results.
 - **E24**: Weight decay for export retention — test both **fixed L2** (sweep 0.1–1.6, from [Q Labs](../references/qlabs_10x_data_efficiency.md)) and **cautious gated decay** (from [NanoGPT speedrun record 44](../references/nanogpt_speedrun_techniques.md#12-cautious-weight-decay)). Cautious variant only applies decay when weight and gradient are aligned, avoiding counterproductive updates. **Unblocked** — depends only on E02, uses in-process roundtrip (not X-05). Kill if pre-quant val_bpb regresses by >0.005 without compensating qgap improvement.
-- **E33**: Range Regularization R² — penalizes the range (max-min) of weight values per row/tensor during training, tightening distributions for better int8 quantization. Distinct from E24 (targets magnitude) and E13 (targets row outliers). R² targets the distribution shape itself. Optionally bundle with **KURE** (kurtosis regularization, arXiv:2602.03614) which penalizes spiky distributions. Ref: [small model landscape](../references/small_model_optimization_landscape.md#2-range-regularization-r-for-quantization). **Unblocked** — depends only on E02. Kill if pre-quant regresses >0.004 without qgap improvement.
+- **E33**: Range Regularization R² — add `λ * mean_over_rows(max(W_row) - min(W_row))` per 2D weight matrix to the training loss. Distinct from E24 (targets magnitude) and E13 (targets row outliers). R² targets the distribution range directly since int8 scale = range/255. Sweep λ ∈ {0.001, 0.01, 0.1}. Kill if pre-quant regresses >0.004 without qgap improvement ≥20%. Ref: [small model landscape](../references/small_model_optimization_landscape.md#2-range-regularization-r-for-quantization). **Unblocked** — depends only on E02.
+- **E14**: _Moved to Ideas to Explore_ — QAT-lite has too broad a design space (which weights, per-row vs per-tensor STE, phase-in schedule) for a single kill-rule experiment. Promote after E24/E33 results inform which QAT variant matters.
 
 ## Key Metrics
 - Δpq (post-roundtrip delta vs baseline) — primary ranking metric
@@ -26,7 +26,7 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 - E14: promote if Δpq ≤ -0.004 and step slowdown <12%
 
 ## Status
-Blocked on fresh-process replay correctness. `P-02` is complete and `E02` passed on `baseline_repro-20260319-093041-82dade88`, but fresh 1xH100 replays of saved `final_model.pt` artifacts still do not reproduce the trusted in-run metrics. Multiple fresh instrumented runs proved the in-trainer reload path is healthy, and persisting RoPE `inv_freq` did not fix standalone replay, so `E03` and `E04` remain paused until the fresh-process reconstruction path is explained by the new block-0 cache probes.
+Unblocked, but the static exporter-only stars are now complete and flat. `P-02` is complete, `E02` passed on `baseline_repro-20260319-093041-82dade88`, and `X-05` is trusted on both a fresh P1 proof run and the actual trusted `E02` baseline checkpoint. `E03` and `E04` both finished with `no win`, and `E23` export-time EMA has now also been tested and killed, so the next worthwhile Track B step is `E24` rather than more exporter-only knob sweeps or more export-smoothing exploration. Overall repo priority can now sensibly go first to `E35` on top of the promoted WSD base, then `E28`.
 
 ## Learnings
 - Exporter controls currently exposed via env vars: `INT8_CLIP_PERCENTILE`, `INT8_KEEP_FLOAT_MAX_NUMEL`, `CONTROL_TENSOR_NAME_PATTERNS`, and `INT8_KEEP_FLOAT_FP32_NAME_PATTERNS`
@@ -44,4 +44,16 @@ Blocked on fresh-process replay correctness. `P-02` is complete and `E02` passed
 - Replay tooling now emits deep block-0 DIAG lines for the raw checkpoint path, including cache-cleared and cache-prewarmed variants, and `experiments/scripts/compare_diag.py` can diff them against trainer logs to isolate the first divergent field automatically
 - The proof run `proxy_p1_fast-20260319-230602-1649fc2b` answered that question: clearing the trainer-side rotary caches makes the in-process raw-checkpoint path fall directly into the standalone replay regime, and replay matches the cache-cleared trainer block-0 payload exactly
 - Track B is therefore blocked on one concrete model-side defect, not on the exporter utility: RoPE cache reconstruction is precision-sensitive, and rebuilt tables differ enough from the live cached tables to move prequant `val_bpb` from `1.40158006` to `1.79098528`
-- The next unblocker is now a Rotary fix plus one proof rerun: build RoPE caches from a stable fp32 basis, re-verify that trainer reload and fresh-process replay both return to the healthy prequant path, then reopen `E03` and `E04`
+- The unblocker was a model-side RoPE precision bug, not an exporter bug: rebuilding rotary tables in bf16 changed the attention path enough to ruin replay correctness, even though saved weights and config matched
+- `Rotary` now rebuilds its basis and cache tables in fp32, keeps `inv_freq` in fp32 across model casting, and only casts returned `cos/sin` views down to the compute dtype
+- The proof rerun `proxy_p1_fast-20260319-234853-b1623493` shows the replay path is now trustworthy again: trainer live `1.40251948/1.40684974`, trainer reloaded `1.40307901/1.40740379`, and fresh-process replay `1.40307901/1.40740286`
+- Replay-vs-reloaded agreement is effectively exact on that run: prequant delta `+3.6e-10`, postquant delta `-9.3e-07`, and `total_submission_bytes=11,290,179` matches exactly
+- Block-0 DIAGs now agree through the actual computation path after cache rebuild: trainer `train_reloaded_block0_cache_cleared` and replay `replay_loaded_block0` differ only in whether the cache was already populated before the probe, not in any of the forward values
+- The post-fix `E02` replay sanity bundle `e02_replay_sanity-20260319-190049` confirms the fix on the real baseline artifact too: replay landed at prequant `1.21973875`, postquant `1.22687865`, `qgap_bpb=0.00713990`, and `total_submission_bytes=15,874,097`
+- Those `E02` replay deltas are comfortably inside the acceptance band: `+0.00054486` prequant and `+0.00059058` postquant versus the trusted in-run `E02` values, so the exporter-only path is now trusted on the exact checkpoint `E03` and `E04` will use
+- `E03` finished on bundle `e03_clip_star-20260319-190645` and came back flat: the nominal winner was `INT8_CLIP_PERCENTILE=99.99998` at postquant `1.22687860`, but that is still `+0.00059053` worse than the trusted `E02` baseline and therefore not promote-worthy
+- The default clip `99.99984` was effectively tied with the winner at `1.22687865`, and the whole star stayed in a tight but consistently worse band from `+0.00059053` to `+0.00067147` versus `E02`
+- `E04` then kept `INT8_CLIP_PERCENTILE=99.99984` fixed and swept `INT8_KEEP_FLOAT_MAX_NUMEL` on bundle `e04_keep_float_star-20260319-191446`
+- The `E04` result was also flat: `8192`, `16384`, `32768`, and `65536` all landed at exactly `1.22687865` postquant with identical bytes, while `131072` improved to `1.22675124` only by blowing the byte cap at `18,054,259` total bytes
+- The exporter-only conclusion is now clear for this checkpoint: these two static knobs are not where the meaningful win is hiding, so more clip/threshold stars would be wheel-spinning
+- If Track B is the next lane we want to push, `E24` weight decay for export retention is the next concrete candidate rather than more exporter-only knob sweeps
