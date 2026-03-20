@@ -74,6 +74,8 @@ class Hyperparameters:
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
+    logit_softcap_pos = float(os.environ.get("LOGIT_SOFTCAP_POS", os.environ.get("LOGIT_SOFTCAP", "30.0")))
+    logit_softcap_neg = float(os.environ.get("LOGIT_SOFTCAP_NEG", os.environ.get("LOGIT_SOFTCAP", "30.0")))
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
@@ -666,6 +668,8 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        logit_softcap_pos: float | None = None,
+        logit_softcap_neg: float | None = None,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -673,6 +677,8 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
+        self.logit_softcap_pos = logit_softcap_pos if logit_softcap_pos is not None else logit_softcap
+        self.logit_softcap_neg = logit_softcap_neg if logit_softcap_neg is not None else logit_softcap
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -727,7 +733,16 @@ class GPT(nn.Module):
             if self.lm_head is None:
                 raise RuntimeError("lm_head is required when tie_embeddings=False")
             logits_proj = self.lm_head(x)
-        logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
+        # When pos == neg, this is identical to baseline
+        if self.logit_softcap_pos == self.logit_softcap_neg:
+            logits = self.logit_softcap_pos * torch.tanh(logits_proj / self.logit_softcap_pos)
+        else:
+            pos_mask = logits_proj > 0
+            logits = torch.where(
+                pos_mask,
+                self.logit_softcap_pos * torch.tanh(logits_proj / self.logit_softcap_pos),
+                self.logit_softcap_neg * torch.tanh(logits_proj / self.logit_softcap_neg),
+            )
         return F.cross_entropy(logits.float(), targets, reduction="mean")
 
 
@@ -744,7 +759,8 @@ import json as _json
 def hyperparams_fingerprint(args: Hyperparameters, label: str = "hparams") -> None:
     fields = [
         "vocab_size", "num_layers", "model_dim", "num_heads", "num_kv_heads",
-        "mlp_mult", "tie_embeddings", "logit_softcap", "rope_base",
+        "mlp_mult", "tie_embeddings", "logit_softcap", "logit_softcap_pos",
+        "logit_softcap_neg", "rope_base",
         "qk_gain_init", "tied_embed_init_std", "train_seq_len", "val_batch_size",
     ]
     info: dict[str, object] = {f: getattr(args, f) for f in fields}
@@ -757,6 +773,8 @@ def hyperparams_fingerprint(args: Hyperparameters, label: str = "hparams") -> No
 def model_fingerprint(model: nn.Module, label: str = "fingerprint") -> None:
     info: dict[str, object] = {
         "logit_softcap": model.logit_softcap,
+        "logit_softcap_pos": model.logit_softcap_pos,
+        "logit_softcap_neg": model.logit_softcap_neg,
         "tie_embeddings": model.tie_embeddings,
         "num_encoder_layers": model.num_encoder_layers,
         "num_decoder_layers": model.num_decoder_layers,
@@ -814,7 +832,15 @@ def diagnostic_forward(
         logits_proj = F.linear(final, model.tok_emb.weight)
     else:
         logits_proj = model.lm_head(final)
-    logits = model.logit_softcap * torch.tanh(logits_proj / model.logit_softcap)
+    if model.logit_softcap_pos == model.logit_softcap_neg:
+        logits = model.logit_softcap_pos * torch.tanh(logits_proj / model.logit_softcap_pos)
+    else:
+        pos_mask = logits_proj > 0
+        logits = torch.where(
+            pos_mask,
+            model.logit_softcap_pos * torch.tanh(logits_proj / model.logit_softcap_pos),
+            model.logit_softcap_neg * torch.tanh(logits_proj / model.logit_softcap_neg),
+        )
     loss = F.cross_entropy(logits.float(), y.reshape(-1), reduction="mean")
     stats["logits"] = f"{logits.float().mean().item():.8f}|{logits.float().std().item():.8f}|loss={loss.item():.8f}"
     if was_training:
@@ -934,6 +960,8 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        logit_softcap_pos=args.logit_softcap_pos,
+        logit_softcap_neg=args.logit_softcap_neg,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
