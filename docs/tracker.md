@@ -59,6 +59,9 @@
 | [ ] | E12 | Embedding norm penalty A/B | P1→P2 | C | E09 |
 | [ ] | E29 | Value embed gate: per-block scalar ve_gate_w (init=0), V += gate*tok_emb[:kv_dim] | P1 | E | E02 |
 | [ ] | E30 | Batch schedule: 131K tokens first 30% of steps, then 524K for remaining 70% | P1 | C | E02 |
+| [ ] | E34a | Polar Express drop-in (optimal polynomial NS replacement, ~50 lines) | P1 | C | E02 |
+| [ ] | E34b | Turbo-Muon AOL preconditioning (if E34a insufficient, ~200 lines) | P1 | C | E34a |
+| [ ] | E34c | NorMuon neuron-wise adaptive LR (~150 lines) | P1 | C | E02 |
 
 ## Phase 3: Export-Aware Training
 
@@ -68,6 +71,9 @@
 | [ ] | E15 | Compose best exporter settings + best regularizer winner (composition) | P2 | B | E24,E33,E13 |
 | [ ] | E24 | Weight decay for export retention (cautious gated + fixed, sweep 0.1–1.6) | P1→P2 | B | E02 |
 | [ ] | E33 | Range Reg R²: λ * mean(max-min per row), sweep λ ∈ {0.001,0.01,0.1} | P1→P2 | B | E02 |
+| [ ] | E14b | Quant noise injection: σ(t)=0.5*exp(-0.01t), delayed step 2000, ~2% overhead | P1 | B | E02 |
+| [ ] | E14a | STE fake-quantize all 2D matrices, delayed step 1000, ~10% overhead | P1 | B | E02 |
+| [ ] | E14c | Learned per-row scales (LSQ-lite), own LR, ~8% overhead | P1 | B | E14b or E14a |
 
 ## Phase 4: Byte-Efficient Capacity Trades
 
@@ -78,6 +84,9 @@
 | [ ] | E18 | Layer sharing (6/5/4 unique layers looped to 9-12 effective) | P1 | E | E02 |
 | [ ] | E25 | SwiGLU activation replacing ReLU² (matched param budget) | P1 | E | E02 |
 | [ ] | E26 | Layer sharing + SwiGLU rebudget (composition: E18 savings → SwiGLU hidden=704) | P1→P2 | E | E18, E25 |
+| [ ] | E31a | MTP: 1 aux head (t+2), equal weight, no curriculum, ~8-12% overhead | P1 | E | E02 |
+| [ ] | E31b | MTP: 2 aux heads (t+2,t+3), forward curriculum phased in, ~15-20% overhead | P1 | E | E31a |
+| [ ] | E31c | MTP: decaying loss weights (λ_k = 0.5^(k-1)) on E31b architecture | P1 | E | E31b |
 
 ## Phase 5: Composition and Promotion
 
@@ -111,11 +120,7 @@
 
 ## Ideas to Explore (not yet precise enough for a kill-rule experiment)
 
-| ID | Idea | Why not ready | Promote when |
-|----|------|--------------|-------------|
-| E14 | QAT-lite (int8 STE during training) | Broad design space: which weights, per-row vs per-tensor, phase-in schedule | After E24/E33 results inform which QAT variant matters |
-| E31 | Multi-token prediction (training-only heads) | Many hyperparameters: head count, positions, loss weighting, schedule | After simpler recipe wins (E35, E28, E30) are resolved |
-| E34 | Turbo-Muon (AOL spectral preconditioning) | Implementation availability unknown; research task to port | If clean implementation found or paper code released |
+(Empty — E14, E31, E34 were decomposed into sub-experiments E14a/b/c, E31a/b/c, E34a/b/c and promoted back to the phase tables.)
 
 ## Current State
 

@@ -50,8 +50,23 @@ The gate starts at zero (no change from baseline) and the model learns how much 
 
 **Kill:** Worse than baseline by ≥0.003 Δpq at P1.
 
-### E31: _Moved to Ideas to Explore_
-Multi-token prediction has too many design choices for a single kill-rule run (head count, positions, loss weighting schedule, phase-in timing). The NanoGPT speedrun used a complex `ForwardScheduleConfig` that is itself a recipe, not a parameter. Promote after simpler recipe wins (E35, E28, E30) are resolved and there's bandwidth for a more involved design study.
+### E31a: MTP — Single Auxiliary Head (gate experiment)
+Add one `nn.Linear(512, 1024)` head predicting t+2. Loss = `CE(t+1) + CE(t+2)` (equal weight). Enabled from step 0, no curriculum. Head discarded at export (zero artifact cost). ~25 lines, ~8-12% step overhead.
+
+**Key risk:** Meta's paper found MTP benefits increase with model size. At 15M params, this is a gate experiment — if it fails, the whole MTP branch dies.
+
+**Kill:** Δpq ≥ +0.002 or step time >15%.
+
+### E31b: MTP — Forward Curriculum (2 heads, phased in)
+Two auxiliary heads (t+2, t+3) phased in via forward curriculum:
+- Steps 0–10%: NTP only
+- Steps 10–50%: Add t+2 head
+- Steps 50–100%: Add t+3 head
+
+~40 lines, ~15-20% step overhead at full MTP. Kill if Δpq ≥ +0.002 or step time >20%. **Depends on E31a passing.**
+
+### E31c: MTP — Decaying Loss Weights
+Same as E31b but with exponential loss decay: λ_k = 0.5^(k-1) (t+1=1.0, t+2=0.5, t+3=0.25). Reduces gradient noise from harder positions. ~5 lines on top of E31b. Kill if Δpq ≥ +0.002. **Depends on E31b passing.**
 
 ## Key Metrics
 - Δpq, qgap, artifact slack (especially freed bytes from sharing)
