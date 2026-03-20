@@ -77,6 +77,9 @@ class Hyperparameters:
     logit_softcap_pos = float(os.environ.get("LOGIT_SOFTCAP_POS", os.environ.get("LOGIT_SOFTCAP", "30.0")))
     logit_softcap_neg = float(os.environ.get("LOGIT_SOFTCAP_NEG", os.environ.get("LOGIT_SOFTCAP", "30.0")))
 
+    # Value embedding gate: V += gate * tok_emb[:kv_dim] (init=0, disabled by default)
+    value_embed_gate = int(os.environ.get("VALUE_EMBED_GATE", "0"))
+
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
@@ -296,7 +299,7 @@ CONTROL_TENSOR_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
         "CONTROL_TENSOR_NAME_PATTERNS",
-        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights",
+        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,ve_gate_w",
     ).split(",")
     if pattern
 )
@@ -569,6 +572,7 @@ class CausalSelfAttention(nn.Module):
         num_kv_heads: int,
         rope_base: float,
         qk_gain_init: float,
+        value_embed_gate: bool = False,
     ):
         super().__init__()
         if dim % num_heads != 0:
@@ -588,12 +592,17 @@ class CausalSelfAttention(nn.Module):
         self.proj._zero_init = True
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
         self.rotary = Rotary(self.head_dim, base=rope_base)
+        self.ve_gate_w = nn.Parameter(torch.zeros(1, dtype=torch.float32)) if value_embed_gate else None
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, tok_emb: Tensor | None = None) -> Tensor:
         bsz, seqlen, dim = x.shape
         q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = self.c_v(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        if self.ve_gate_w is not None and tok_emb is not None:
+            kv_dim = self.num_kv_heads * self.head_dim
+            ve = tok_emb[..., :kv_dim].reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
+            v = v + self.ve_gate_w.to(dtype=v.dtype) * ve
         q = F.rms_norm(q, (q.size(-1),))
         k = F.rms_norm(k, (k.size(-1),))
         cos, sin = self.rotary(seqlen, x.device, q.dtype)
@@ -635,11 +644,12 @@ class Block(nn.Module):
         mlp_mult: int,
         rope_base: float,
         qk_gain_init: float,
+        value_embed_gate: bool = False,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
         self.mlp_norm = RMSNorm()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init, value_embed_gate)
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
@@ -648,7 +658,7 @@ class Block(nn.Module):
     def forward(self, x: Tensor, x0: Tensor) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x))
+        attn_out = self.attn(self.attn_norm(x), tok_emb=x0)
         x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
@@ -670,6 +680,7 @@ class GPT(nn.Module):
         qk_gain_init: float,
         logit_softcap_pos: float | None = None,
         logit_softcap_neg: float | None = None,
+        value_embed_gate: bool = False,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -693,6 +704,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
+                    value_embed_gate,
                 )
                 for i in range(num_layers)
             ]
@@ -962,6 +974,7 @@ def main() -> None:
         qk_gain_init=args.qk_gain_init,
         logit_softcap_pos=args.logit_softcap_pos,
         logit_softcap_neg=args.logit_softcap_neg,
+        value_embed_gate=bool(args.value_embed_gate),
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
