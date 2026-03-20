@@ -1,0 +1,15 @@
+extends: baseline.yaml
+
+name: phase1_e27_doc_aligned_p1
+description: "P1 document-aligned batching on BOS-delimited published shards"
+hypothesis_id: "E27"
+group: "track-f-data"
+notes: "BOS-delimited document-aligned training batches with ignored padded targets."
+
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+  DOC_ALIGNED_BATCHING: "1"

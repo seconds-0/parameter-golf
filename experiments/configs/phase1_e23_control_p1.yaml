@@ -1,0 +1,12 @@
+extends: baseline.yaml
+name: phase1_e23_control_p1
+description: "Matched same-host P1 baseline control for E23 export-time EMA"
+hypothesis_id: "E23-control"
+group: "track-c-control"
+notes: "Matched same-host P1 control for the E23 export-time EMA sweep."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"

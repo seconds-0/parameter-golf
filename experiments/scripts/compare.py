@@ -52,6 +52,12 @@ def fmt_compact(value: float | int | None, width: int, precision: int = 2) -> st
     return f"{text:>{width}}"
 
 
+def fmt_percent(value: float | None, width: int, precision: int = 1) -> str:
+    if value is None:
+        return f"{'N/A':>{width}}"
+    return f"{100.0 * value:.{precision}f}%".rjust(width)
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: compare.py <metrics1.json> [metrics2.json ...]", file=sys.stderr)
@@ -86,6 +92,7 @@ def main():
             "time_s": (data["train_steps"][-1]["train_time_ms"] / 1000) if data.get("train_steps") else None,
             "step_avg_ms": (data["train_steps"][-1]["step_avg_ms"] if data.get("train_steps") else None),
             "tok_s": data.get("tok_s"),
+            "supervised_target_fraction": final.get("supervised_target_fraction"),
             "slack_bytes": final.get("artifact_slack_bytes"),
             "peak_mem": final.get("peak_memory_allocated_mib"),
             "params": config.get("model_params"),
@@ -125,7 +132,7 @@ def main():
     hdr = (
         f"{'Run ID':<30} | {'Status':<7} | {'PostBPB':>9} | {'Δpq':>8} | {'PreBPB':>9} | {'qgap':>8} | "
         f"{'EgrΔ':>8} | {'RldΔ':>8} | "
-        f"{'StepMs':>7} | {'Tok/s':>7} | {'Slack':>7} | {'Cost($)':>7} | {'Host':<12} | {'Group':<12} | {'Hypothesis':<16}"
+        f"{'StepMs':>7} | {'Tok/s':>7} | {'Sup%':>6} | {'Slack':>7} | {'Cost($)':>7} | {'Host':<12} | {'Group':<12} | {'Hypothesis':<16}"
     )
     sep = "-" * len(hdr)
     print(hdr)
@@ -141,7 +148,7 @@ def main():
             f"{fmt_number(r['postquant_val_bpb'], 9, 4, star=best)} | {fmt_delta(r['delta_pq'], 8, 4)} | "
             f"{fmt_number(r['prequant_val_bpb'], 9, 4)} | {fmt_number(r['qgap_bpb'], 8, 4)} | "
             f"{fmt_delta(r['uncompiled_delta_bpb'], 8, 4)} | {fmt_delta(r['reloaded_postquant_delta_bpb'], 8, 4)} | "
-            f"{fmt_number(r['step_avg_ms'], 7, 1)} | {fmt_compact(r['tok_s'], 7)} | {fmt_compact(r['slack_bytes'], 7)} | "
+            f"{fmt_number(r['step_avg_ms'], 7, 1)} | {fmt_compact(r['tok_s'], 7)} | {fmt_percent(r['supervised_target_fraction'], 6)} | {fmt_compact(r['slack_bytes'], 7)} | "
             f"{cost} | {host:<12} | {group:<12} | {hypothesis:<16}"
         )
 

@@ -87,6 +87,15 @@ def parse_log(text: str) -> dict[str, object]:
             if "train_tokens_seen" in kv:
                 entry["train_tokens_seen"] = int(float(kv["train_tokens_seen"]))
                 result["train_tokens_seen"] = entry["train_tokens_seen"]
+            if "train_supervised_tokens_seen" in kv:
+                entry["train_supervised_tokens_seen"] = int(float(kv["train_supervised_tokens_seen"]))
+                result["train_supervised_tokens_seen"] = entry["train_supervised_tokens_seen"]
+            if "ignored_target_tokens_seen" in kv:
+                entry["ignored_target_tokens_seen"] = int(float(kv["ignored_target_tokens_seen"]))
+                result["ignored_target_tokens_seen"] = entry["ignored_target_tokens_seen"]
+            if "supervised_target_fraction" in kv:
+                entry["supervised_target_fraction"] = float(kv["supervised_target_fraction"])
+                result["supervised_target_fraction"] = entry["supervised_target_fraction"]
             result["train_steps"].append(entry)
             continue
 
@@ -142,13 +151,19 @@ def parse_log(text: str) -> dict[str, object]:
             continue
 
         # Config: attention_mode, seed, run_id, etc.
-        if any(line.startswith(p) for p in ("attention_mode:", "seed:", "run_id:", "sdp_backends:", "optimizer:")):
+        if any(
+            line.startswith(p)
+            for p in ("attention_mode:", "seed:", "run_id:", "sdp_backends:", "optimizer:", "doc_aligned_batching:")
+        ):
             kv = parse_kv(line)
             for k, v in kv.items():
-                try:
-                    result["config"][k] = float(v) if "." in v else int(v)
-                except ValueError:
-                    result["config"][k] = v
+                if v in ("True", "False"):
+                    result["config"][k] = v == "True"
+                else:
+                    try:
+                        result["config"][k] = float(v) if "." in v else int(v)
+                    except ValueError:
+                        result["config"][k] = v
             continue
 
         # Early stopping
@@ -166,6 +181,18 @@ def parse_log(text: str) -> dict[str, object]:
                 value = int(float(kv["train_tokens_seen"]))
                 result["train_tokens_seen"] = value
                 result["final"]["train_tokens_seen"] = value
+            if "train_supervised_tokens_seen" in kv:
+                value = int(float(kv["train_supervised_tokens_seen"]))
+                result["train_supervised_tokens_seen"] = value
+                result["final"]["train_supervised_tokens_seen"] = value
+            if "ignored_target_tokens_seen" in kv:
+                value = int(float(kv["ignored_target_tokens_seen"]))
+                result["ignored_target_tokens_seen"] = value
+                result["final"]["ignored_target_tokens_seen"] = value
+            if "supervised_target_fraction" in kv:
+                value = float(kv["supervised_target_fraction"])
+                result["supervised_target_fraction"] = value
+                result["final"]["supervised_target_fraction"] = value
             if "tok_s" in kv:
                 result["tok_s"] = float(kv["tok_s"])
             continue
@@ -216,6 +243,18 @@ def parse_log(text: str) -> dict[str, object]:
                 value = int(float(kv["train_tokens_seen"]))
                 result["train_tokens_seen"] = value
                 result["final"]["train_tokens_seen"] = value
+            if "train_supervised_tokens_seen" in kv:
+                value = int(float(kv["train_supervised_tokens_seen"]))
+                result["train_supervised_tokens_seen"] = value
+                result["final"]["train_supervised_tokens_seen"] = value
+            if "ignored_target_tokens_seen" in kv:
+                value = int(float(kv["ignored_target_tokens_seen"]))
+                result["ignored_target_tokens_seen"] = value
+                result["final"]["ignored_target_tokens_seen"] = value
+            if "supervised_target_fraction" in kv:
+                value = float(kv["supervised_target_fraction"])
+                result["supervised_target_fraction"] = value
+                result["final"]["supervised_target_fraction"] = value
             continue
 
         for prefix, field_prefix in EXACT_METRIC_FIELDS.items():
@@ -270,6 +309,18 @@ def parse_log(text: str) -> dict[str, object]:
                     value = int(float(kv["train_tokens_seen"]))
                     result["train_tokens_seen"] = value
                     result["final"]["train_tokens_seen"] = value
+                if "train_supervised_tokens_seen" in kv:
+                    value = int(float(kv["train_supervised_tokens_seen"]))
+                    result["train_supervised_tokens_seen"] = value
+                    result["final"]["train_supervised_tokens_seen"] = value
+                if "ignored_target_tokens_seen" in kv:
+                    value = int(float(kv["ignored_target_tokens_seen"]))
+                    result["ignored_target_tokens_seen"] = value
+                    result["final"]["ignored_target_tokens_seen"] = value
+                if "supervised_target_fraction" in kv:
+                    value = float(kv["supervised_target_fraction"])
+                    result["supervised_target_fraction"] = value
+                    result["final"]["supervised_target_fraction"] = value
                 continue
 
             m = re.match(rf"checkpoint_save_verify\s+max_abs_diff:{NUMBER_RE}\s+tensors_mismatched:(\d+)", line)
@@ -315,6 +366,17 @@ def parse_log(text: str) -> dict[str, object]:
         result["final"]["artifact_slack_bytes"] = 16_000_000 - int(result["final"]["total_submission_bytes"])
     if "train_tokens_seen" in result:
         result["final"]["train_tokens_seen"] = int(result["train_tokens_seen"])
+    if "train_supervised_tokens_seen" in result:
+        result["final"]["train_supervised_tokens_seen"] = int(result["train_supervised_tokens_seen"])
+    if "ignored_target_tokens_seen" in result:
+        result["final"]["ignored_target_tokens_seen"] = int(result["ignored_target_tokens_seen"])
+    if "supervised_target_fraction" in result:
+        result["final"]["supervised_target_fraction"] = float(result["supervised_target_fraction"])
+    elif "train_supervised_tokens_seen" in result and "ignored_target_tokens_seen" in result:
+        total_targets = int(result["train_supervised_tokens_seen"]) + int(result["ignored_target_tokens_seen"])
+        result["final"]["supervised_target_fraction"] = (
+            int(result["train_supervised_tokens_seen"]) / total_targets if total_targets else 1.0
+        )
     result["status"] = "success" if saw_exact_roundtrip else "failed"
 
     return result

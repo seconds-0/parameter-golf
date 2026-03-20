@@ -1,0 +1,13 @@
+extends: baseline.yaml
+name: phase1_e32_control_p1
+description: "Matched same-host P1 baseline schedule control for E32"
+hypothesis_id: "E32-control"
+group: "track-c-control"
+notes: "Matched same-host P1 control for the E32 WSD schedule test."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "baseline"

@@ -1,0 +1,14 @@
+extends: baseline.yaml
+
+name: phase1_e27_control_p1
+description: "Matched same-host P1 baseline control for E27 document-aligned batching"
+hypothesis_id: "E27-control"
+group: "track-f-control"
+notes: "Matched same-host P1 control for the E27 loader experiment."
+
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
