@@ -9,7 +9,7 @@ The experiment infrastructure must be trustworthy before any experimental result
 - **E00**: Baseline P0 smoke
 - **E01**: Baseline P1 control
 - **E02**: Baseline 8xH100 reproduction
-- **E27**: Document-aligned batching — align batch boundaries with EOS tokens so the model never attends across document boundaries within a sequence. Pure data loading change, zero artifact cost. Speedrun record 28 showed measurable gain. Modify `TokenStream`/`DistributedTokenLoader` to detect and respect document boundaries. Kill if val_bpb regresses by >0.002. Ref: [NanoGPT speedrun 1.6](../references/nanogpt_speedrun_techniques.md#16-document-aligned-batching). **Unblocked** — depends only on E02.
+- **E27**: Document-aligned batching — test document-respecting training windows on the published BOS-delimited shards without regenerating data. Implemented by splitting training sequences on `bos_id`, padding short tails with `bos_id`, and masking padded targets with `-100`. Kill if val_bpb regresses by >0.002 or if supervision waste dominates the run. Ref: [NanoGPT speedrun 1.6](../references/nanogpt_speedrun_techniques.md#16-document-aligned-batching). **Complete, killed** — the paired P1 result on current shards was strongly negative.
 
 ## Key Principles
 - No model conclusion is trustworthy until E02 passes (within 0.003 bpb of baseline); E00 and E01 exist only to validate the harness
@@ -19,12 +19,12 @@ The experiment infrastructure must be trustworthy before any experimental result
 - All new experiment knobs as env vars (auto-discovered by config_utils)
 
 ## Status
-Trusted for launch/measurement on the training path, but not yet trusted for standalone saved-artifact replay. `P-01`, `P-02`, `P-03`, `P-04`, `P-05`, `P-06`, `X-01`, `X-02`, `E00`, `E01`, and `E02` are done. The next work in sequence is now a focused fresh-process replay bughunt, because two fresh instrumented runs showed trainer-side reload is healthy while standalone replay is still wrong.
+Trusted for launch/measurement on both the training path and standalone saved-artifact replay path. `P-01`, `P-02`, `P-03`, `P-04`, `P-05`, `P-06`, `X-01`, `X-02`, `X-05`, `E00`, `E01`, `E02`, `E27`, `E32`, and `E35` are done, and the first baseline exporter sweeps `E03`/`E04` are also complete and flat. There is no urgent Track F blocker right now; the broader repo next tranche is `E28` on top of the promoted WSD base, with `E24` as the next Track B-specific branch if we want to stay on export retention after that. Detailed closeout review for the Track F experiment branch: [E27](../postmortems/e27_doc_aligned_batching.md).
 
 ## Learnings
 - MLX lazy eval bug fixed (mx.synchronize → mx.eval)
-- 53 infra tests passing
-- Codex + Gemini review hardened the replay utility, but a deeper fresh-process reconstruction bug remains
+- 66 infra tests passing
+- Codex + Gemini review helped harden the replay utility and narrow the eventual root cause to RoPE cache reconstruction precision
 - `E00` succeeded on `proxy_p0_smoke-20260319-082117-62aaaea6` with post-roundtrip `val_bpb=2.59277612`, `qgap_bpb=0.00857417`, and `artifact_slack_bytes=9,350,400`
 - The first live `1xH100` run caught a launcher bug: `launch.py run` was defaulting to `8` GPUs instead of the machine's configured GPU count
 - Triton requires a tiny compile toolchain on remote hosts; preflight now verifies `Python.h` and `gcc` before launch
@@ -45,3 +45,18 @@ Trusted for launch/measurement on the training path, but not yet trusted for sta
 - `Rotary.inv_freq` is now serialized in checkpoints, and a second fresh proof run `proxy_p1_fast-20260319-192237-39db664f` still reproduced the same standalone replay failure on the original remote artifact, so the blocker is narrower: it is not just a missing non-persistent RoPE buffer
 - The DIAG proof run `proxy_p1_fast-20260319-204141-603684f1` showed that trainer and replay agree on hyperparameters and loaded-model fingerprints, and that fresh eager replay and fresh compiled replay agree with each other too
 - The first deterministic forward mismatch is at `enc0` while `emb` still matches exactly, so the remaining systems blocker is now concentrated inside block 0 runtime state rather than launcher/env/config plumbing
+- The next diagnostic tranche is now in the repo: trainer and replay both emit deep block-0 DIAG probes for `attn_norm`, `q/k` before and after RoPE, rotary cache state, `attn_out`, `mlp_out`, and `enc0`, plus cache-cleared and cache-prewarmed variants for the reloaded raw checkpoint path
+- `experiments/scripts/compare_diag.py` now provides a stable way to diff `DIAG:*` lines and report the first divergent field, so the next GPU proof run can answer the cache hypothesis directly instead of relying on manual log inspection
+- The local regression suite remains green after the bughunt instrumentation tranche: `55` infra tests pass, and the P1 proxy config still validates cleanly
+- The proof run `proxy_p1_fast-20260319-230602-1649fc2b` answered the cache hypothesis directly: clearing the rotary caches before `reloaded_prequant_exact` reproduces the standalone replay failure in-process (`1.79098528 / 1.79751456`), while the live cached path remains healthy at `1.40158006 / 1.79692971`
+- The block-0 DIAG comparison is now exact enough to name the fault line: trainer `train_reloaded_block0_cache_cleared` and replay `replay_loaded_block0` match field-for-field from `cos/sin` through `enc0`, which means the standalone replay bug is no longer “mysterious fresh-process state”; it is “rebuilding RoPE tables produces a different table than the live cached one”
+- The rebuilt rotary table numerics lined up with bf16 reconstruction, while the healthy live cached table was closer to an fp32-built table; the correct systems fix was therefore to make RoPE cache construction precision-stable rather than relying on whatever precision the first cache fill happened to use
+- `Rotary` now rebuilds `inv_freq`, `cos`, and `sin` from an fp32 basis and keeps `inv_freq` in fp32 even after `model.bfloat16()`, while returning bf16 views for compute
+- Two new regressions now lock that behavior: one proves `inv_freq` stays fp32 after model casting, and one proves clearing/rebuilding the rotary cache does not change the returned tables
+- The proof rerun `proxy_p1_fast-20260319-234853-b1623493` closed the systems bug: trainer live `1.40251948/1.40684974`, trainer reloaded `1.40307901/1.40740379`, and fresh-process replay `1.40307901/1.40740286` now agree within noise
+- The remaining replay delta is now ordinary eval noise, not a correctness bug: replay-vs-reloaded differs by `+3.6e-10` prequant and `-9.3e-07` postquant, with matching artifact bytes
+- The post-fix `E02` replay sanity check `e02_replay_sanity-20260319-190049` verified that replay trust holds on the actual trusted baseline artifact too: replay landed at `1.21973875/1.22687865`, just `+0.00054486/+0.00059058` away from the trusted in-run `E02` metrics
+- The paired E27 P1 bundle gave a clean negative result on the published BOS-delimited shards: `phase1_e27_control_p1-20260320-155905-eb77f1a0` landed at postquant `1.41199216`, while `phase1_e27_doc_aligned_p1-20260320-160818-f96fe403` landed at `1.52791342`
+- The regression was not subtle: `Δpq=+0.11592126`, `qgap` worsened from `0.00408529` to `0.01193720`, and step time slowed from `416.29 ms` to `640.23 ms` (`+53.8%`)
+- The new telemetry explains why this branch failed on current data: only `69.17%` of target positions remained supervised, with `75,972,568` ignored targets by the end of the run
+- Systems trust is now restored end to end, and Track F has done its job for this branch too: E27 was cheap to test, decisively negative on the current shard format, and should not stay in the active “likely win” queue unless the data packing approach changes

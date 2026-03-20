@@ -1,6 +1,6 @@
 # Experiment Interactions, Conflicts, and Composition
 
-> How the experiments play together. Read before composing winners in Phase 5.
+> How the experiments play together. Read before composing winners in Phase 5. Detailed closeout reviews for completed branches live in [docs/postmortems/](./postmortems/README.md).
 
 ## Experiment Grouping by Pipeline Stage
 
@@ -11,9 +11,9 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 |-----|------|----------|
 | Baseline | Current baseline warmdown | — |
 | **E32** | WSD (Warmup-Stable-Decay) | **Replaces** the current baseline warmdown. Pick one. |
-| **E35** | Higher β₂ during cooldown | **Layers on top** of either E32 or cosine. Not exclusive. |
+| **E35** | Higher β₂ during cooldown | **Layers on top** of either E32 or cosine. Not exclusive, but now tested and killed on top of WSD. |
 
-**Verdict:** E32 vs the current baseline schedule is a binary choice. E35 is a modifier that works with either. The live repo result now favors WSD.
+**Verdict:** E32 vs the current baseline schedule is a binary choice, and the live repo result now favors WSD. `E35` was the obvious modifier to test next, but it regressed cleanly on top of WSD, so the active schedule base remains plain WSD.
 
 ### Group B: Optimizer Internals (INDEPENDENT)
 | Exp | What | Conflict |
@@ -87,7 +87,7 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 ## Composition Risk Matrix
 
 **Safe to compose (independent axes):**
-- E30 (batch schedule) + E32 (WSD) + E35 (β₂)
+- E30 (batch schedule) + E32 (WSD)
 - E34 (Turbo-Muon) + any schedule change
 - E31 (MTP) + any architecture (zero export cost)
 - E28 (logit rescale) + most things (watch E31 interaction)
@@ -95,7 +95,7 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 **Compose carefully (same axis, diminishing returns):**
 - E24 + E33 + E13 — max 2 of 3 regularizers
 - E03/E04 re-sweep needed after any regularizer change
-- E32 + E35 — synergistic but test E32 alone first
+- E32 + E35 — now tested on the WSD base and killed in the current repo state
 
 **Compose with budget check (artifact-coupled):**
 - E18 + E25 -> E26 — explicitly designed as combo, but verify artifact fits
@@ -113,7 +113,7 @@ Build the final candidate in layers, testing each before adding the next:
 - E34 (Turbo-Muon) or standard — pick winner
 
 **Layer 2 — Recipe (layer on top of L1 winner):**
-- E35 (beta2 cooldown) — on top of L1 schedule
+- E35 (beta2 cooldown) — already tested on the WSD base and killed; do not include in the active composition stack
 - E30 (batch size schedule) — on top of L1
 - E28 (asymmetric logit rescale)
 
@@ -136,10 +136,10 @@ Build the final candidate in layers, testing each before adding the next:
 
 The suite is NOT a simple list to run sequentially. It's a **decision tree:**
 
-1. Start with the live cheap `E02`-unblocked independent tranche from the current state: `E35` on top of the promoted `E32` WSD base, then `E28`
+1. Start with the live cheap `E02`-unblocked independent tranche from the current state: `E28` on top of the promoted `E32` WSD base
 2. `E27` is already complete and killed on the current BOS-delimited shard format, so it is no longer part of the active queue unless the packing/data path changes materially
 3. `E23` is also complete and killed on the current short-run proxy, so the live tranche now centers on schedule/logit experiments unless we intentionally switch to Track B and run `E24`
-4. The active base recipe now uses WSD, so the next decision is whether `E35` improves that base further before broader composition
+4. The active base recipe now uses plain WSD because `E35` regressed on top of it; after `E28`, the next Track C side branches are `E30` and `E34`
 5. If Track B is the next lane to push after that tranche, test regularizers individually in this order of discipline: `E24`, then `E33` or `E13`; only re-sweep `E03/E04` after one of those changes the distribution
 6. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, not default next steps
 7. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches

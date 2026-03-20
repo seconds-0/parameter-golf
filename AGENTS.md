@@ -9,6 +9,7 @@ Core training entry points live at the repository root: `train_gpt.py` for CUDA 
 - **Read `docs/tracker.md` first** to see current progress, next tasks, and what is blocked.
 - Read `docs/experiment_plan_prd.md` for the full strategy and promotion logic.
 - Read `docs/tracks/track_{a-f}_*.md` for per-track thesis, experiments, decision rules, and learnings.
+- When a run is genuinely ready for packaging, use `docs/submission_checklist.md` for the repo-local submission and leaderboard checklist.
 
 Key principles that govern all experiment work:
 - **Post-roundtrip is the only real metric.** Never promote on pre-quant improvement alone. Track `Δpq` (post-roundtrip delta vs baseline, negative=better) and `qgap` (post-quant minus pre-quant bpb, smaller=better).

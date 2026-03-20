@@ -14,7 +14,7 @@ In this small-vocab tied-embedding regime, the embedding matrix is unusually loa
 - **E34a**: Polar Express — drop-in replacement for `zeropower_via_newtonschulz5()` using minimax-optimal spectral polynomial. Proven in NanoGPT speedrun record #38. ~50-100 lines, pure PyTorch. Code: github.com/NoahAmsel/PolarExpress. Test both reducing iterations (5→4) and keeping 5 for better quality. Kill if Δpq ≥ +0.003 AND step time doesn't improve. **Unblocked** — depends only on E02.
 - **E34b**: Turbo-Muon AOL — add diagonal spectral preconditioner before NS iterations. `AOL = fast_inv_sqrt(sum(abs(W@W^T)))`. ~200-300 lines, PyTorch version available at github.com/thib-s/flash-newton-schulz/. Kill if Δpq ≥ +0.003 AND no speedup. Run only if E34a insufficient.
 - **E34c**: NorMuon — row-wise normalization after orthogonalization using per-neuron second-order momentum. ~150-200 lines. Code: github.com/zichongli5/NorMuon. Independent axis from E34a/b (adaptive LR, not faster ortho). Kill if Δpq ≥ +0.003. Can run in parallel with E34a.
-- **E35**: Higher β₂ during cooldown — increase Adam β₂ from 0.95 to 0.97-0.99 during the LR decay phase. arXiv:2508.01483 showed this improves final val loss. ~3 lines of code. Can combine with E32 (WSD) or existing cosine warmdown. Kill if val_bpb regresses >0.001. **Unblocked** — depends only on E02.
+- **E35**: Higher β₂ during cooldown — increase Adam β₂ from 0.95 to 0.97-0.99 during the LR decay phase. arXiv:2508.01483 showed this improves final val loss. ~3 lines of code. Can combine with E32 (WSD) or existing cosine warmdown. Kill if val_bpb regresses >0.001. **Complete, killed** — the matched same-host P1 follow-up on top of WSD regressed cleanly.
 
 ## Key Metrics
 - Δpq (post-roundtrip delta vs baseline)
@@ -27,13 +27,13 @@ In this small-vocab tied-embedding regime, the embedding matrix is unusually loa
 - Do NOT run the 15-config LR grid — it's explicitly the wrong approach per the PRD
 
 ## Status
-Partially unblocked. Tokenizer-dependent recipe work `E10`-`E12` still depends on `E09` (tokenizer winner selected), while the cheap side experiments `E28`, `E30`, `E34`, and `E35` remain unblocked by `E02`. `E23` is complete and killed, and `E32` is now complete and promoted as the active base schedule.
+Partially unblocked. Tokenizer-dependent recipe work `E10`-`E12` still depends on `E09` (tokenizer winner selected), while the cheap side experiments `E28`, `E30`, and `E34` remain unblocked by `E02`. `E23` and `E35` are complete and killed, and `E32` is now complete and promoted as the active base schedule. Detailed closeout reviews: [E23](../postmortems/e23_ema_export.md), [E32](../postmortems/e32_wsd_schedule.md), [E35](../postmortems/e35_cooldown_beta2.md).
 
 The recommended next Track C order is:
-- `E35` on top of the promoted WSD base schedule
-- `E28` asymmetric logit rescale
+- `E28` asymmetric logit rescale on top of the promoted WSD base
+- `E30` batch schedule or `E34a` Polar Express as the next independent side branch after `E28`
 
-`E30` and `E34` remain valid `E02`-unblocked side branches, but they are not the current highest-priority cheap tranche.
+`E30` and `E34` remain valid `E02`-unblocked side branches, but `E28` is now the highest-priority cheap Track C follow-up because `E35` failed to improve the promoted WSD base.
 
 ## Learnings
 - `E23` produced a clean negative result in the matched same-host P1 bundle: control `phase1_e23_control_p1-20260320-163308-38d0b485` landed at postquant `1.38639890`, while `EMA_DECAY=0.999` landed at `2.03365982` and `EMA_DECAY=0.9999` landed at `5.45891420`
@@ -43,3 +43,6 @@ The recommended next Track C order is:
 - `E32` produced a strong same-host P1 win: control `phase1_e32_control_p1-20260320-172313-5aaa1c50` landed at postquant `1.46474630`, while WSD `phase1_e32_wsd_p1-20260320-173257-a73c389c` improved to `1.44033240`
 - The win is broad, not a qgap-only fluke: WSD improved prequant by `-0.01689080`, post-roundtrip by `-0.02441390`, and qgap by `-0.00752309`
 - Step time moved only modestly (`557.65 ms` → `568.16 ms`, `+1.88%`), which is small enough that WSD should become the active base schedule for the next Track C follow-up rather than being treated as a fragile special case
+- `E35` cleanly failed as the first WSD follow-up: control `phase1_e35_wsd_control_p1-20260320-183746-f3f18702` landed at postquant `1.44615320`, while the cooldown-β₂ candidate `phase1_e35_wsd_beta2_p1-20260320-184735-878125dc` regressed to `1.45758252`
+- The regression was not a qgap-only trade: prequant also worsened (`1.44512983` → `1.45651059`), qgap ticked up slightly (`0.00102337` → `0.00107193`), and artifact bytes increased (`12,756,384` → `12,797,094`) even though step time improved a little (`639.8 ms` → `630.1 ms`)
+- That means the right lesson is not “tune β₂ harder”; it is that the promoted WSD schedule should stay plain for now, and the next cheap Track C branch should move to a different mechanism such as `E28`

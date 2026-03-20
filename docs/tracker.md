@@ -1,6 +1,6 @@
 # Parameter Golf — Master Progress Tracker
 
-> **Read this first on resume.** Full strategy: `docs/experiment_plan_prd.md`. Track details: `docs/tracks/`. Composition rules: `docs/experiment_interactions.md`.
+> **Read this first on resume.** Full strategy: `docs/experiment_plan_prd.md`. Track details: `docs/tracks/`. Composition rules: `docs/experiment_interactions.md`. Closed-experiment reviews: [docs/postmortems/](./postmortems/README.md).
 
 ## Prerequisites (complete before experiments)
 
@@ -43,7 +43,7 @@
 | [x] | E27 | Document-aligned batching on published BOS-delimited shards | P1 | F | E02 |
 | [ ] | E28 | Asymmetric softcap: separate cap_pos/cap_neg, test (30,20),(30,15),(20,30) | P1 | C | E02 |
 | [x] | E32 | WSD LR schedule (Warmup-Stable-Decay replacing baseline warmdown) | P1 | C | E02 |
-| [ ] | E35 | Higher β₂ during cooldown (0.97-0.99 in decay phase) | P1 | C | E02 |
+| [x] | E35 | Higher β₂ during cooldown (0.97-0.99 in decay phase) | P1 | C | E02 |
 
 ## Phase 2: Tokenizer First, Then Recipe
 
@@ -116,7 +116,7 @@
 
 - Conservative plan: ~12-15 H100-hours total
 - Phase caps: P0 10%, P1 25%, P2 35%, P3 20%, P4 10% reserved
-- Current spend: ~$9.50
+- Current spend: ~$10.39
 
 ## Ideas to Explore (not yet precise enough for a kill-rule experiment)
 
@@ -130,8 +130,10 @@
 - `E27` is now complete and killed on the current published BOS-delimited shards. The paired same-host P1 bundle `phase1_e27_control_p1-20260320-155905-eb77f1a0` vs `phase1_e27_doc_aligned_p1-20260320-160818-f96fe403` regressed post-roundtrip from `1.41199216` to `1.52791342` (`Δpq=+0.11592126`), worsened `qgap` from `0.00408529` to `0.01193720`, and slowed step time from `416.29 ms` to `640.23 ms` (`+53.8%`). The loader only supervised `69.17%` of target positions on the published shards, so this is not an active baseline modifier.
 - `E23` is now complete and killed. The matched same-host P1 control `phase1_e23_control_p1-20260320-163308-38d0b485` landed at postquant `1.38639890` with `qgap=0.00272267`. The EMA export candidates were dramatically worse despite healthy live training metrics: `phase1_e23_ema0999_p1-20260320-164244-1b5abd14` landed at `2.03365982` (`Δpq=+0.64726092`, `qgap=0.00562494`), and `phase1_e23_ema09999_p1-20260320-165137-f8faa3a1` landed at `5.45891420` (`Δpq=+4.07251530`, `qgap=0.03394086`). Both live prequant checks stayed near baseline before the EMA swap, so this branch failed specifically at the export-smoothed snapshot, not in the training path.
 - `E32` is now complete and promoted. The matched same-host P1 control `phase1_e32_control_p1-20260320-172313-5aaa1c50` landed at postquant `1.46474630`, prequant `1.45614906`, and `qgap=0.00859724` with `step_avg_ms=557.65`. The WSD candidate `phase1_e32_wsd_p1-20260320-173257-a73c389c` improved to postquant `1.44033240`, prequant `1.43925826`, and `qgap=0.00107415`, for `Δpq=-0.02441390`, `Δpre=-0.01689080`, and `Δqgap=-0.00752309`, while step time only rose to `568.16 ms` (`+1.88%`). This is a clear P1 promotion and makes WSD the active base schedule for the next recipe follow-up.
+- `E35` is now complete and killed on top of the promoted WSD base. The matched same-host P1 control `phase1_e35_wsd_control_p1-20260320-183746-f3f18702` landed at postquant `1.44615320`, prequant `1.44512983`, `qgap=0.00102337`, and `639.8 ms/step`. The cooldown-β₂ candidate `phase1_e35_wsd_beta2_p1-20260320-184735-878125dc` regressed to postquant `1.45758252`, prequant `1.45651059`, and `qgap=0.00107193`, for `Δpq=+0.01142932`, `Δpre=+0.01138076`, and a slight artifact regression (`12,756,384` → `12,797,094` bytes) while only modestly improving step time (`639.8 ms` → `630.1 ms`). This cleanly fails the Track C kill rule, so the active base recipe remains plain WSD without cooldown β₂ changes.
+- Post-mortem coverage now exists for every completed non-baseline experiment in the live tracker: `E03`, `E04`, `E23`, `E27`, `E32`, and `E35` all have closeout reviews in [docs/postmortems/](./postmortems/README.md), and none currently need reopening.
 - Static exporter-only tuning is therefore exhausted for this checkpoint. If we stay in Track B, the next concrete branch is `E24` weight decay for export retention, followed later by `E33` or `E13` one at a time.
-- The best overall next cheap tranche is now `E35` on top of the promoted WSD base, then `E28` asymmetric logit rescale. If we choose to push Track B next instead, `E24` is the right branch.
+- The best overall next cheap tranche is now `E28` asymmetric logit rescale on top of the promoted WSD base. `E30` and `E34` remain valid side branches after that. If we choose to push Track B next instead, `E24` is the right branch.
 - Tokenizer work is still blocked on `X-06` then `E05`, and tokenizer-dependent recipe stars `E10`-`E12` remain blocked on `E09`.
 
 ## Recent Learnings
@@ -142,3 +144,4 @@
 - `E27` was worth testing, but the current shard format matters: using BOS-delimited document alignment without regenerating data or adding a denser packing scheme left roughly `31%` of target positions ignored, which overwhelmed any hoped-for boundary-respect gain and makes this branch a clear kill on today's published dataset.
 - `E23` was also worth testing because it cleanly separated live training quality from exported-model quality. On this short P1 proxy, both EMA decays left the live prequant path near baseline but made the exported checkpoint catastrophically worse, which is a strong sign that naive long-horizon export-only EMA is the wrong fit for this regime as implemented.
 - `E32` is the first strong positive result in the cheap independent tranche: WSD did not just shave `qgap`; it improved both prequant and post-roundtrip quality materially on a matched same-host P1 run, which is exactly the profile we want before layering anything on top.
+- `E35` usefully answered the obvious follow-up to WSD: simply raising Adam β₂ during the cooldown phase did not refine the WSD win. On the matched same-host P1 bundle it made both prequant and post-roundtrip quality worse, so the promoted schedule remains plain WSD and we should look for the next independent recipe lever instead of overfitting this schedule family.

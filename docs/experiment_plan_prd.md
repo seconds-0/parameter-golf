@@ -2,6 +2,8 @@ Below is the plan I would hand to the engineer.
 
 The governing rule is simple: no idea earns expensive compute until it wins on the only metric that matters, **post-roundtrip validation bits per byte**, on a matched cheap proxy.
 
+Editorial note: this document is the strategic background plan, but the live execution order is governed by `docs/tracker.md` and `docs/experiment_interactions.md`. Since the baseline replay path is now trusted, the baseline exporter-only stars `E03`/`E04` came back flat, and `E32` has now promoted on a matched P1 proxy, the current live queue prioritizes `E35` on top of the WSD base and then `E28` before tokenizer-dependent recipe work.
+
 ## 1. Portfolio framing
 
 The objective is not "get a better training curve." The objective is to produce a **self-contained artifact under 16,000,000 bytes, where code bytes and compressed model bytes both count, that reproduces the lowest possible FineWeb validation bits per byte after the exact export roundtrip, and still finishes under 10 minutes on 8×H100 for leaderboard runs**. The public baseline is already close to the cap: it scores 1.2244 post-roundtrip `val_bpb`, uses 15,863,489 total bytes, and leaves only 136,511 bytes of slack. The 4-hour non-record run keeps the same 9×512 SP-1024 layout and nearly the same step time, but most of its extra pre-quant gain leaks away at export: the baseline's pre/post gap is about 0.0072 bpb, while the 4-hour run's gap is about 0.0325 bpb; by arithmetic, only about 40 percent of the longer run's pre-quant gain survives roundtrip. That is the single strongest argument for putting export robustness ahead of architecture heroics. ([GitHub][1])
