@@ -882,7 +882,12 @@ def parse_batch_schedule(schedule_str: str) -> list[tuple[float, int]]:
     stages: list[tuple[float, int]] = []
     for part in schedule_str.split(","):
         frac_str, tokens_str = part.strip().split(":")
-        stages.append((float(frac_str), int(tokens_str)))
+        frac, tokens = float(frac_str), int(tokens_str)
+        if not (0.0 < frac <= 1.0):
+            raise ValueError(f"batch schedule fraction must be in (0, 1], got {frac}")
+        if tokens <= 0:
+            raise ValueError(f"batch schedule tokens must be positive, got {tokens}")
+        stages.append((frac, tokens))
     stages.sort(key=lambda s: s[0])
     return stages
 
@@ -908,7 +913,11 @@ def scheduled_batch_tokens(step: int, iterations: int, stages: list[tuple[float,
 # -----------------------------
 
 def compute_aux_losses(model: nn.Module, args: Hyperparameters) -> Tensor:
-    """Compute auxiliary regularization losses on 2D weight matrices."""
+    """Compute auxiliary regularization losses on 2D weight matrices.
+
+    Called once per step (outside the micro-step loop) since these penalties
+    depend on the current weights, not on the data batch.
+    """
     aux = torch.zeros((), device=next(model.parameters()).device)
     if args.aux_loss_weight_decay == 0 and args.aux_loss_range_reg == 0 and args.aux_loss_clamp_reg == 0:
         return aux
@@ -917,15 +926,16 @@ def compute_aux_losses(model: nn.Module, args: Hyperparameters) -> Tensor:
             continue
         if any(pat in name for pat in CONTROL_TENSOR_NAME_PATTERNS):
             continue
+        p_float = p.float()
         if args.aux_loss_weight_decay > 0:
-            aux = aux + args.aux_loss_weight_decay * p.float().pow(2).mean()
+            aux = aux + args.aux_loss_weight_decay * p_float.pow(2).mean()
         if args.aux_loss_range_reg > 0:
-            row_ranges = p.float().max(dim=-1).values - p.float().min(dim=-1).values
+            row_ranges = p_float.max(dim=-1).values - p_float.min(dim=-1).values
             aux = aux + args.aux_loss_range_reg * row_ranges.mean()
         if args.aux_loss_clamp_reg > 0:
             with torch.no_grad():
-                thresholds = torch.quantile(p.float().abs(), INT8_CLIP_Q, dim=-1, keepdim=True)
-            excess = torch.clamp(p.float().abs() - thresholds, min=0)
+                thresholds = torch.quantile(p_float.abs(), INT8_CLIP_Q, dim=-1, keepdim=True)
+            excess = torch.clamp(p_float.abs() - thresholds, min=0)
             aux = aux + args.aux_loss_clamp_reg * excess.pow(2).mean()
     return aux
 
@@ -1237,14 +1247,16 @@ def main() -> None:
         effective_batch_tokens = scheduled_batch_tokens(step, args.iterations, batch_stages, args.train_batch_tokens)
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
+        # Aux losses depend on weights not data, so compute once per step before micro-steps.
+        aux_loss = compute_aux_losses(base_model, args) if any_aux_loss else None
         for micro_step in range(grad_accum_steps):
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(effective_batch_tokens, args.train_seq_len, grad_accum_steps)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
-            if any_aux_loss:
-                loss = loss + compute_aux_losses(base_model, args)
+            if aux_loss is not None:
+                loss = loss + aux_loss
             train_loss += loss.detach()
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps
