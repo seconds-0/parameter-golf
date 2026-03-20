@@ -1212,6 +1212,7 @@ def main() -> None:
     t0 = time.perf_counter()
 
     step = 0
+    train_tokens_seen = 0
     while True:
         last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
 
@@ -1253,16 +1254,15 @@ def main() -> None:
         effective_batch_tokens = scheduled_batch_tokens(step, args.iterations, batch_stages, args.train_batch_tokens)
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
-        # Aux losses depend on weights not data, so compute once per step before micro-steps.
-        aux_loss = compute_aux_losses(base_model, args) if any_aux_loss else None
         for micro_step in range(grad_accum_steps):
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(effective_batch_tokens, args.train_seq_len, grad_accum_steps)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
-            if aux_loss is not None:
-                loss = loss + aux_loss
+            if any_aux_loss:
+                # Recompute per micro-step so each backward sees a fresh graph.
+                loss = loss + compute_aux_losses(base_model, args)
             train_loss += loss.detach()
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps
@@ -1302,13 +1302,13 @@ def main() -> None:
         zero_grad_all()
 
         step += 1
+        train_tokens_seen += effective_batch_tokens
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         should_log_train = (
             args.train_log_every > 0
             and (step <= 10 or step % args.train_log_every == 0 or stop_after_step is not None)
         )
         if should_log_train:
-            train_tokens_seen = step * args.train_batch_tokens
             tok_s = train_tokens_seen / max(approx_training_time_ms / 1000.0, 1e-9)
             log0(
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
@@ -1339,7 +1339,6 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    train_tokens_seen = step * args.train_batch_tokens
 
     def exact_eval(eval_model: nn.Module) -> tuple[float, float, int]:
         torch.cuda.synchronize()
