@@ -80,6 +80,11 @@ class Hyperparameters:
     # Value embedding gate: V += gate * tok_emb[:kv_dim] (init=0, disabled by default)
     value_embed_gate = int(os.environ.get("VALUE_EMBED_GATE", "0"))
 
+    # Auxiliary regularization losses (all default to 0.0 = disabled)
+    aux_loss_weight_decay = float(os.environ.get("AUX_LOSS_WEIGHT_DECAY", "0.0"))
+    aux_loss_range_reg = float(os.environ.get("AUX_LOSS_RANGE_REG", "0.0"))
+    aux_loss_clamp_reg = float(os.environ.get("AUX_LOSS_CLAMP_REG", "0.0"))
+
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
@@ -861,6 +866,33 @@ def diagnostic_forward(
 
 
 # -----------------------------
+# AUXILIARY REGULARIZATION LOSSES
+# -----------------------------
+
+def compute_aux_losses(model: nn.Module, args: Hyperparameters) -> Tensor:
+    """Compute auxiliary regularization losses on 2D weight matrices."""
+    aux = torch.zeros((), device=next(model.parameters()).device)
+    if args.aux_loss_weight_decay == 0 and args.aux_loss_range_reg == 0 and args.aux_loss_clamp_reg == 0:
+        return aux
+    for name, p in model.named_parameters():
+        if p.ndim != 2:
+            continue
+        if any(pat in name for pat in CONTROL_TENSOR_NAME_PATTERNS):
+            continue
+        if args.aux_loss_weight_decay > 0:
+            aux = aux + args.aux_loss_weight_decay * p.float().pow(2).mean()
+        if args.aux_loss_range_reg > 0:
+            row_ranges = p.float().max(dim=-1).values - p.float().min(dim=-1).values
+            aux = aux + args.aux_loss_range_reg * row_ranges.mean()
+        if args.aux_loss_clamp_reg > 0:
+            with torch.no_grad():
+                thresholds = torch.quantile(p.float().abs(), INT8_CLIP_Q, dim=-1, keepdim=True)
+            excess = torch.clamp(p.float().abs() - thresholds, min=0)
+            aux = aux + args.aux_loss_clamp_reg * excess.pow(2).mean()
+    return aux
+
+
+# -----------------------------
 # TRAINING
 # -----------------------------
 
@@ -1065,6 +1097,12 @@ def main() -> None:
             opt.zero_grad(set_to_none=True)
 
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
+    any_aux_loss = args.aux_loss_weight_decay > 0 or args.aux_loss_range_reg > 0 or args.aux_loss_clamp_reg > 0
+    if any_aux_loss:
+        log0(
+            f"aux_losses:weight_decay={args.aux_loss_weight_decay} "
+            f"range_reg={args.aux_loss_range_reg} clamp_reg={args.aux_loss_clamp_reg}"
+        )
 
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
@@ -1161,6 +1199,8 @@ def main() -> None:
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
+            if any_aux_loss:
+                loss = loss + compute_aux_losses(base_model, args)
             train_loss += loss.detach()
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps
