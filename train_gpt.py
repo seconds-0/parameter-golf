@@ -1350,8 +1350,6 @@ def main() -> None:
                     p.data.mul_(1.0 - scale * args.cautious_weight_decay * mask)
         if ema_params is not None:
             update_ema_parameters(ema_params, base_model, args.ema_decay)
-        if ema_params is not None:
-            update_ema_parameters(ema_params, base_model, args.ema_decay)
         zero_grad_all()
 
         step += 1
@@ -1401,9 +1399,6 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    train_supervised_tokens_seen = train_loader.supervised_tokens_seen
-    ignored_target_tokens_seen = train_loader.ignored_target_tokens_seen
-    supervised_target_fraction = train_loader.supervised_target_fraction
     train_supervised_tokens_seen = train_loader.supervised_tokens_seen
     ignored_target_tokens_seen = train_loader.ignored_target_tokens_seen
     supervised_target_fraction = train_loader.supervised_target_fraction
