@@ -110,6 +110,21 @@ def load_trainer_with_env(trainer_path: Path, env: dict[str, str]) -> Any:
     return trainer
 
 
+def maybe_call(trainer: Any, name: str, *args: Any) -> None:
+    fn = getattr(trainer, name, None)
+    if callable(fn):
+        fn(*args)
+
+
+def compat_raw_checkpoint_state_dict(base_model: Any, state_dict: dict[str, Any]) -> dict[str, Any]:
+    patched = dict(state_dict)
+    model_state = base_model.state_dict()
+    for key, value in model_state.items():
+        if key.endswith("rotary.inv_freq") and key not in patched:
+            patched[key] = value
+    return patched
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate exporter settings from a saved final_model.pt checkpoint")
     parser.add_argument("checkpoint", help="Path to final_model.pt")
@@ -158,7 +173,7 @@ def main() -> int:
     enable_math_sdp(False)
 
     runtime_args = trainer.Hyperparameters()
-    trainer.hyperparams_fingerprint(runtime_args, "replay_hparams")
+    maybe_call(trainer, "hyperparams_fingerprint", runtime_args, "replay_hparams")
     random.seed(runtime_args.seed)
     np.random.seed(runtime_args.seed)
     trainer.torch.manual_seed(runtime_args.seed)
@@ -191,6 +206,8 @@ def main() -> int:
         tie_embeddings=runtime_args.tie_embeddings,
         tied_embed_init_std=runtime_args.tied_embed_init_std,
         logit_softcap=runtime_args.logit_softcap,
+        logit_softcap_pos=runtime_args.logit_softcap_pos,
+        logit_softcap_neg=runtime_args.logit_softcap_neg,
         rope_base=runtime_args.rope_base,
         qk_gain_init=runtime_args.qk_gain_init,
     ).to(device).bfloat16()
@@ -200,9 +217,48 @@ def main() -> int:
     trainer.restore_low_dim_params_to_fp32(base_model)
 
     state_dict = trainer.torch.load(checkpoint_path, map_location="cpu")
+    state_dict = compat_raw_checkpoint_state_dict(base_model, state_dict)
     base_model.load_state_dict(state_dict, strict=True)
-    trainer.model_fingerprint(base_model, "replay_loaded")
-    trainer.diagnostic_forward(base_model, runtime_args.train_seq_len, runtime_args.vocab_size, device, "replay_diag_fwd")
+    maybe_call(trainer, "model_fingerprint", base_model, "replay_loaded")
+    maybe_call(
+        trainer,
+        "diagnostic_forward",
+        base_model,
+        runtime_args.train_seq_len,
+        runtime_args.vocab_size,
+        device,
+        "replay_diag_fwd",
+    )
+    maybe_call(
+        trainer,
+        "diagnostic_block0_forward",
+        base_model,
+        runtime_args.train_seq_len,
+        runtime_args.vocab_size,
+        device,
+        "replay_loaded_block0",
+    )
+    maybe_call(trainer, "reset_rotary_caches", base_model)
+    maybe_call(
+        trainer,
+        "diagnostic_block0_forward",
+        base_model,
+        runtime_args.train_seq_len,
+        runtime_args.vocab_size,
+        device,
+        "replay_loaded_block0_cache_cleared",
+    )
+    maybe_call(trainer, "reset_rotary_caches", base_model)
+    maybe_call(trainer, "prewarm_rotary_caches", base_model, runtime_args.train_seq_len, device, base_model.tok_emb.weight.dtype)
+    maybe_call(
+        trainer,
+        "diagnostic_block0_forward",
+        base_model,
+        runtime_args.train_seq_len,
+        runtime_args.vocab_size,
+        device,
+        "replay_loaded_block0_cache_prewarmed",
+    )
 
     pre_val_loss, pre_val_bpb = trainer.eval_val(
         runtime_args,

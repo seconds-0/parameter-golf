@@ -1,0 +1,14 @@
+extends: baseline.yaml
+name: phase1_e23_ema09999_p1
+description: "P1 export-time EMA candidate with decay 0.9999"
+hypothesis_id: "E23-ema09999"
+group: "track-c-ema"
+notes: "Export-time EMA shadow weights with decay 0.9999."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+  EMA_EXPORT: "1"
+  EMA_DECAY: "0.9999"

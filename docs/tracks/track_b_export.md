@@ -30,7 +30,7 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 - E14: promote if Δpq ≤ -0.004 and step slowdown <12%
 
 ## Status
-Unblocked, but the static exporter-only stars are now complete and flat. `P-02` is complete, `E02` passed on `baseline_repro-20260319-093041-82dade88`, and `X-05` is trusted on both a fresh P1 proof run and the actual trusted `E02` baseline checkpoint. `E03` and `E04` both finished with `no win`, and `E23` export-time EMA has now also been tested and killed, so the next worthwhile Track B step is `E24` rather than more exporter-only knob sweeps or more export-smoothing exploration. Overall repo priority can now sensibly go first to `E35` on top of the promoted WSD base, then `E28`.
+Unblocked, but the static exporter-only stars are now complete and flat. `P-02` is complete, `E02` passed on `baseline_repro-20260319-093041-82dade88`, and `X-05` is trusted on both a fresh P1 proof run and the actual trusted `E02` baseline checkpoint. `E03` and `E04` both finished with `no win`, and `E23` export-time EMA has now also been tested and killed, so the next worthwhile Track B step is `E24` rather than more exporter-only knob sweeps or more export-smoothing exploration. Overall repo priority now goes first to `E28` on top of the promoted WSD base; if we deliberately switch back to export retention after that, `E24` is the right Track B branch. Detailed closeout reviews: [E03](../postmortems/e03_exporter_clip_star.md), [E04](../postmortems/e04_keep_float_threshold.md).
 
 ## Learnings
 - Exporter controls currently exposed via env vars: `INT8_CLIP_PERCENTILE`, `INT8_KEEP_FLOAT_MAX_NUMEL`, `CONTROL_TENSOR_NAME_PATTERNS`, and `INT8_KEEP_FLOAT_FP32_NAME_PATTERNS`

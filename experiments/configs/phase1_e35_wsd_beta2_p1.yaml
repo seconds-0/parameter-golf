@@ -1,0 +1,18 @@
+extends: baseline.yaml
+name: phase1_e35_wsd_beta2_p1
+description: "P1 WSD + cooldown beta2=0.98 candidate"
+hypothesis_id: "E35"
+group: "track-c-schedule"
+notes: "Increase Adam beta2 to 0.98 during the WSD decay phase."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  ENABLE_COOLDOWN_BETA2: "1"
+  COOLDOWN_BETA2: "0.98"

@@ -18,6 +18,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import compare
+import compare_diag
 import config_utils
 import cost
 import export_eval
@@ -27,6 +28,7 @@ import parse_log
 import preflight
 import submit
 import sweep_queue
+import train_schedule
 import watchdog
 
 gc_spec = importlib.util.spec_from_file_location("pgolf_gc_test", SCRIPTS_DIR / "gc.py")
@@ -43,6 +45,19 @@ BASELINE_CONFIG = ROOT / "experiments" / "configs" / "baseline.yaml"
 P0_SMOKE_CONFIG = ROOT / "experiments" / "configs" / "proxy_p0_smoke.yaml"
 P1_FAST_CONFIG = ROOT / "experiments" / "configs" / "proxy_p1_fast.yaml"
 E01_P1_CONFIG = ROOT / "experiments" / "configs" / "phase0_e01_baseline_p1.yaml"
+E27_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e27_control_p1.yaml"
+E27_DOC_ALIGNED_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e27_doc_aligned_p1.yaml"
+E23_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e23_control_p1.yaml"
+E23_EMA_0999_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e23_ema0999_p1.yaml"
+E23_EMA_09999_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e23_ema09999_p1.yaml"
+E32_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e32_control_p1.yaml"
+E32_WSD_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e32_wsd_p1.yaml"
+E35_WSD_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e35_wsd_control_p1.yaml"
+E35_WSD_BETA2_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e35_wsd_beta2_p1.yaml"
+E28_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_control_p1.yaml"
+E28_ASYM3020_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_asym3020_p1.yaml"
+E28_ASYM3015_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_asym3015_p1.yaml"
+E28_ASYM2030_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_asym2030_p1.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
 BASELINE_LOG = ROOT / "records" / "track_10min_16mb" / "2026-03-17_NaiveBaseline" / "train.log"
 
@@ -65,6 +80,7 @@ def write_metrics(
     tok_s: float = 1_500_000.0,
     uncompiled_check_delta_bpb: float | None = None,
     reloaded_postquant_val_bpb: float | None = None,
+    supervised_target_fraction: float | None = None,
 ) -> None:
     prequant = prequant_val_bpb if prequant_val_bpb is not None else val_bpb - 0.01
     reloaded_postquant = reloaded_postquant_val_bpb if reloaded_postquant_val_bpb is not None else None
@@ -85,6 +101,8 @@ def write_metrics(
             "stop_step": 123,
         },
     }
+    if supervised_target_fraction is not None:
+        payload["final"]["supervised_target_fraction"] = supervised_target_fraction
     if uncompiled_check_delta_bpb is not None:
         payload["final"]["uncompiled_check_delta_bpb"] = uncompiled_check_delta_bpb
     if reloaded_postquant is not None:
@@ -130,6 +148,126 @@ def test_validate_e01_p1_control_config() -> None:
     assert {run.env["SEED"] for run in result.runs} == {"1337", "2024"}
 
 
+def test_validate_e27_control_config() -> None:
+    result = config_utils.validate_config(E27_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["SEED"] == "1337"
+    assert run.metadata["hypothesis_id"] == "E27-control"
+
+
+def test_validate_e27_doc_aligned_config() -> None:
+    result = config_utils.validate_config(E27_DOC_ALIGNED_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["SEED"] == "1337"
+    assert run.env["DOC_ALIGNED_BATCHING"] == "1"
+    assert run.metadata["hypothesis_id"] == "E27"
+
+
+def test_validate_e23_control_config() -> None:
+    result = config_utils.validate_config(E23_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["SEED"] == "1337"
+    assert "EMA_EXPORT" not in run.env
+    assert run.metadata["hypothesis_id"] == "E23-control"
+
+
+def test_validate_e23_ema0999_config() -> None:
+    result = config_utils.validate_config(E23_EMA_0999_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["EMA_EXPORT"] == "1"
+    assert run.env["EMA_DECAY"] == "0.999"
+    assert run.metadata["hypothesis_id"] == "E23-ema0999"
+
+
+def test_validate_e23_ema09999_config() -> None:
+    result = config_utils.validate_config(E23_EMA_09999_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["EMA_EXPORT"] == "1"
+    assert run.env["EMA_DECAY"] == "0.9999"
+    assert run.metadata["hypothesis_id"] == "E23-ema09999"
+
+
+def test_validate_e32_control_config() -> None:
+    result = config_utils.validate_config(E32_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["SEED"] == "1337"
+    assert run.env["LR_SCHEDULE"] == "baseline"
+    assert run.metadata["hypothesis_id"] == "E32-control"
+
+
+def test_validate_e32_wsd_config() -> None:
+    result = config_utils.validate_config(E32_WSD_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["SEED"] == "1337"
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert run.env["WSD_WARMUP_FRAC"] == "0.01"
+    assert run.env["WSD_STABLE_FRAC"] == "0.75"
+    assert run.env["WSD_DECAY_STYLE"] == "cosine"
+    assert run.metadata["hypothesis_id"] == "E32"
+
+
+def test_validate_e35_wsd_control_config() -> None:
+    result = config_utils.validate_config(E35_WSD_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert "ENABLE_COOLDOWN_BETA2" not in run.env
+    assert run.metadata["hypothesis_id"] == "E35-control"
+
+
+def test_validate_e35_wsd_beta2_config() -> None:
+    result = config_utils.validate_config(E35_WSD_BETA2_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert run.env["ENABLE_COOLDOWN_BETA2"] == "1"
+    assert run.env["COOLDOWN_BETA2"] == "0.98"
+    assert run.metadata["hypothesis_id"] == "E35"
+
+
+def test_validate_e28_control_config() -> None:
+    result = config_utils.validate_config(E28_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert "LOGIT_SOFTCAP_POS" not in run.env
+    assert run.metadata["hypothesis_id"] == "E28-control"
+
+
+def test_validate_e28_asym3020_config() -> None:
+    result = config_utils.validate_config(E28_ASYM3020_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LOGIT_SOFTCAP_POS"] == "30"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "20"
+    assert run.metadata["hypothesis_id"] == "E28-3020"
+
+
+def test_validate_e28_asym3015_config() -> None:
+    result = config_utils.validate_config(E28_ASYM3015_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LOGIT_SOFTCAP_POS"] == "30"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "15"
+    assert run.metadata["hypothesis_id"] == "E28-3015"
+
+
+def test_validate_e28_asym2030_config() -> None:
+    result = config_utils.validate_config(E28_ASYM2030_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert run.metadata["hypothesis_id"] == "E28-2030"
+
+
 def test_export_eval_parses_env_overrides() -> None:
     parsed = export_eval.parse_env_overrides(["INT8_CLIP_PERCENTILE=99.99995", "INT8_KEEP_FLOAT_MAX_NUMEL=32768"])
     assert parsed == {
@@ -147,6 +285,120 @@ def test_export_eval_default_outputs_do_not_clobber_run_artifacts(tmp_path: Path
     checkpoint = tmp_path / "final_model.pt"
     assert export_eval.default_artifact_out(checkpoint).name == "final_model.export_eval.int8.ptz"
     assert export_eval.default_metrics_out(checkpoint).name == "final_model.export_eval.json"
+
+
+def test_lr_schedule_multiplier_baseline_and_wsd() -> None:
+    baseline = train_schedule.lr_schedule_multiplier(
+        schedule="baseline",
+        step=900,
+        iterations=1000,
+        warmdown_iters=200,
+        elapsed_ms=90_000.0,
+        max_wallclock_ms=None,
+        wsd_warmup_frac=0.01,
+        wsd_stable_frac=0.75,
+        wsd_decay_style="cosine",
+    )
+    assert baseline == pytest.approx(0.5)
+
+    wsd_warmup = train_schedule.lr_schedule_multiplier(
+        schedule="wsd",
+        step=5,
+        iterations=1000,
+        warmdown_iters=200,
+        elapsed_ms=500.0,
+        max_wallclock_ms=100_000.0,
+        wsd_warmup_frac=0.01,
+        wsd_stable_frac=0.75,
+        wsd_decay_style="cosine",
+    )
+    assert wsd_warmup == pytest.approx(0.5)
+
+    wsd_stable = train_schedule.lr_schedule_multiplier(
+        schedule="wsd",
+        step=400,
+        iterations=1000,
+        warmdown_iters=200,
+        elapsed_ms=40_000.0,
+        max_wallclock_ms=100_000.0,
+        wsd_warmup_frac=0.01,
+        wsd_stable_frac=0.75,
+        wsd_decay_style="cosine",
+    )
+    assert wsd_stable == pytest.approx(1.0)
+
+    wsd_decay = train_schedule.lr_schedule_multiplier(
+        schedule="wsd",
+        step=990,
+        iterations=1000,
+        warmdown_iters=200,
+        elapsed_ms=88_000.0,
+        max_wallclock_ms=100_000.0,
+        wsd_warmup_frac=0.01,
+        wsd_stable_frac=0.75,
+        wsd_decay_style="cosine",
+    )
+    assert wsd_decay == pytest.approx(0.5)
+
+
+def test_beta2_for_schedule_only_changes_during_wsd_decay() -> None:
+    before_decay = train_schedule.beta2_for_schedule(
+        base_beta2=0.95,
+        cooldown_beta2=0.98,
+        enable_cooldown_beta2=True,
+        schedule="wsd",
+        step=700,
+        iterations=1000,
+        elapsed_ms=70000.0,
+        max_wallclock_ms=100_000.0,
+        wsd_warmup_frac=0.01,
+        wsd_stable_frac=0.75,
+    )
+    in_decay = train_schedule.beta2_for_schedule(
+        base_beta2=0.95,
+        cooldown_beta2=0.98,
+        enable_cooldown_beta2=True,
+        schedule="wsd",
+        step=900,
+        iterations=1000,
+        elapsed_ms=90000.0,
+        max_wallclock_ms=100_000.0,
+        wsd_warmup_frac=0.01,
+        wsd_stable_frac=0.75,
+    )
+    baseline_schedule = train_schedule.beta2_for_schedule(
+        base_beta2=0.95,
+        cooldown_beta2=0.98,
+        enable_cooldown_beta2=True,
+        schedule="baseline",
+        step=900,
+        iterations=1000,
+        elapsed_ms=90000.0,
+        max_wallclock_ms=100_000.0,
+        wsd_warmup_frac=0.01,
+        wsd_stable_frac=0.75,
+    )
+    assert before_decay == pytest.approx(0.95)
+    assert in_decay == pytest.approx(0.98)
+    assert baseline_schedule == pytest.approx(0.95)
+
+
+def test_apply_logit_softcap_matches_symmetric_formula_and_supports_asymmetry() -> None:
+    import torch
+
+    softcap_spec = importlib.util.spec_from_file_location("pgolf_logit_softcap_test", ROOT / "logit_softcap.py")
+    assert softcap_spec is not None and softcap_spec.loader is not None
+    logit_softcap = importlib.util.module_from_spec(softcap_spec)
+    softcap_spec.loader.exec_module(logit_softcap)
+
+    x = torch.tensor([-60.0, -10.0, 0.0, 10.0, 60.0], dtype=torch.float32)
+    symmetric = logit_softcap.apply_logit_softcap(x, 30.0, 30.0)
+    expected = 30.0 * torch.tanh(x / 30.0)
+    assert torch.allclose(symmetric, expected)
+
+    asymmetric = logit_softcap.apply_logit_softcap(x, 30.0, 20.0)
+    assert asymmetric[0].abs() < symmetric[0].abs()
+    assert asymmetric[-1] == pytest.approx(symmetric[-1].item())
 
 
 def test_export_eval_resolve_replay_inputs_prefers_manifest_metadata(tmp_path: Path) -> None:
@@ -199,6 +451,32 @@ def test_export_eval_load_trainer_uses_explicit_snapshot_and_scrubs_env(
     assert os.environ["EXPORT_EVAL_SENTINEL"] == "ambient"
 
 
+def test_export_eval_maybe_call_noops_for_missing_helper() -> None:
+    export_eval.maybe_call(types.SimpleNamespace(), "missing_helper", 1, 2, 3)
+
+
+def test_export_eval_compat_raw_checkpoint_state_dict_backfills_rotary_inv_freq() -> None:
+    class FakeModel:
+        def state_dict(self):
+            return {
+                "blocks.0.attn.rotary.inv_freq": "buf0",
+                "blocks.1.attn.rotary.inv_freq": "buf1",
+                "tok_emb.weight": "weight",
+            }
+
+    patched = export_eval.compat_raw_checkpoint_state_dict(
+        FakeModel(),
+        {
+            "tok_emb.weight": "checkpoint-weight",
+            "blocks.1.attn.rotary.inv_freq": "checkpoint-buf1",
+        },
+    )
+
+    assert patched["tok_emb.weight"] == "checkpoint-weight"
+    assert patched["blocks.0.attn.rotary.inv_freq"] == "buf0"
+    assert patched["blocks.1.attn.rotary.inv_freq"] == "checkpoint-buf1"
+
+
 def test_cached_fineweb_defaults_to_full_train_split() -> None:
     args = cached_fineweb.build_parser().parse_args(["--variant", "sp1024"])
     assert cached_fineweb.resolve_train_shards(args, 195) == 195
@@ -238,6 +516,146 @@ def test_trainer_model_serializes_all_registered_buffers() -> None:
 
     assert missing_buffers == []
 
+
+def test_rotary_keeps_inv_freq_fp32_after_model_bfloat16() -> None:
+    trainer_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_rotary_dtype", ROOT / "train_gpt.py")
+    assert trainer_spec is not None and trainer_spec.loader is not None
+    trainer = importlib.util.module_from_spec(trainer_spec)
+    trainer_spec.loader.exec_module(trainer)
+
+    model = trainer.GPT(
+        vocab_size=1024,
+        num_layers=9,
+        model_dim=512,
+        num_heads=8,
+        num_kv_heads=4,
+        mlp_mult=2,
+        tie_embeddings=True,
+        tied_embed_init_std=0.005,
+        logit_softcap=30.0,
+        rope_base=10000.0,
+        qk_gain_init=1.5,
+    ).bfloat16()
+
+    rotary_dtypes = {
+        name: buffer.dtype
+        for name, buffer in model.named_buffers()
+        if name.endswith("rotary.inv_freq")
+    }
+
+    assert rotary_dtypes
+    assert set(rotary_dtypes.values()) == {trainer.torch.float32}
+
+
+def test_rotary_cache_rebuild_is_invariant_after_reset() -> None:
+    trainer_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_rotary_reset", ROOT / "train_gpt.py")
+    assert trainer_spec is not None and trainer_spec.loader is not None
+    trainer = importlib.util.module_from_spec(trainer_spec)
+    trainer_spec.loader.exec_module(trainer)
+
+    rotary = trainer.Rotary(64).bfloat16()
+    device = trainer.torch.device("cpu")
+    first_cos, first_sin = rotary(1024, device, trainer.torch.bfloat16)
+    trainer.reset_rotary_caches(rotary)
+    second_cos, second_sin = rotary(1024, device, trainer.torch.bfloat16)
+
+    assert rotary.inv_freq.dtype == trainer.torch.float32
+    assert trainer.torch.equal(first_cos, second_cos)
+    assert trainer.torch.equal(first_sin, second_sin)
+
+
+def test_ema_export_updates_and_casts_back_to_model_dtype() -> None:
+    ema_spec = importlib.util.spec_from_file_location("pgolf_ema_export_test", ROOT / "ema_export.py")
+    assert ema_spec is not None and ema_spec.loader is not None
+    ema_export = importlib.util.module_from_spec(ema_spec)
+    ema_spec.loader.exec_module(ema_export)
+
+    trainer_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_ema_test", ROOT / "train_gpt.py")
+    assert trainer_spec is not None and trainer_spec.loader is not None
+    trainer = importlib.util.module_from_spec(trainer_spec)
+    trainer_spec.loader.exec_module(trainer)
+
+    model = trainer.GPT(
+        vocab_size=1024,
+        num_layers=2,
+        model_dim=64,
+        num_heads=4,
+        num_kv_heads=2,
+        mlp_mult=2,
+        tie_embeddings=True,
+        tied_embed_init_std=0.005,
+        logit_softcap=30.0,
+        rope_base=10000.0,
+        qk_gain_init=1.5,
+    ).bfloat16()
+    ema_params = ema_export.init_ema_parameters(model)
+    sample_name = next(iter(ema_params))
+    assert ema_params[sample_name].dtype == trainer.torch.float32
+
+    with trainer.torch.no_grad():
+        for param in model.parameters():
+            if param.is_floating_point():
+                param.add_(1.0)
+                break
+
+    ema_export.update_ema_parameters(ema_params, model, 0.5)
+    export_state = ema_export.build_export_state_dict(model, ema_params)
+    assert export_state[sample_name].dtype == model.state_dict()[sample_name].dtype
+
+
+def test_document_window_stream_pads_short_docs_without_crossing_boundaries() -> None:
+    batching_spec = importlib.util.spec_from_file_location("pgolf_doc_batching_test", ROOT / "doc_batching.py")
+    assert batching_spec is not None and batching_spec.loader is not None
+    batching = importlib.util.module_from_spec(batching_spec)
+    batching_spec.loader.exec_module(batching)
+
+    tokens = iter([1, 11, 12, 1, 21, 22, 23, 1, 31, 32])
+    stream = batching.DocumentWindowStream(lambda: next(tokens), boundary_token=1)
+    x, y = stream.take(2, 4, pad_token=1, ignore_index=-100)
+
+    assert x.tolist() == [[1, 11, 1, 1], [1, 21, 22, 1]]
+    assert y.tolist() == [[11, 12, -100, -100], [21, 22, 23, -100]]
+
+
+def test_document_window_stream_splits_long_docs_across_sequences() -> None:
+    batching_spec = importlib.util.spec_from_file_location("pgolf_doc_batching_long_test", ROOT / "doc_batching.py")
+    assert batching_spec is not None and batching_spec.loader is not None
+    batching = importlib.util.module_from_spec(batching_spec)
+    batching_spec.loader.exec_module(batching)
+
+    tokens = iter([1, 10, 11, 12, 13, 14, 15, 1, 20, 21])
+    stream = batching.DocumentWindowStream(lambda: next(tokens), boundary_token=1)
+    x, y = stream.take(2, 3, pad_token=1, ignore_index=-100)
+
+    assert x.tolist() == [[1, 10, 11], [12, 13, 14]]
+    assert y.tolist() == [[10, 11, 12], [13, 14, 15]]
+
+
+def test_trainer_forward_ignores_masked_targets() -> None:
+    trainer_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_ignore_index", ROOT / "train_gpt.py")
+    assert trainer_spec is not None and trainer_spec.loader is not None
+    trainer = importlib.util.module_from_spec(trainer_spec)
+    trainer_spec.loader.exec_module(trainer)
+
+    model = trainer.GPT(
+        vocab_size=1024,
+        num_layers=2,
+        model_dim=64,
+        num_heads=4,
+        num_kv_heads=2,
+        mlp_mult=2,
+        tie_embeddings=True,
+        tied_embed_init_std=0.005,
+        logit_softcap=30.0,
+        rope_base=10000.0,
+        qk_gain_init=1.5,
+    )
+    x = trainer.torch.randint(0, 1024, (2, 8))
+    y = trainer.torch.randint(0, 1024, (2, 8))
+    y[:, -2:] = trainer.LOSS_IGNORE_INDEX
+    loss = model(x, y)
+
+    assert trainer.torch.isfinite(loss)
 
 def test_validate_exporter_env_vars_are_allowlisted(tmp_path: Path) -> None:
     config_path = write_yaml(
@@ -502,6 +920,38 @@ def test_parse_replay_trust_signals() -> None:
     assert final["replay_trust_postquant_delta_bpb"] == pytest.approx(0.1)
 
 
+def test_parse_document_aligned_training_stats() -> None:
+    parsed = parse_log.parse_log(
+        "\n".join(
+            [
+                "doc_aligned_batching:True boundary_token_id:1 ema_export:True ema_decay:0.999900",
+                "seed:1337 lr_schedule:wsd wsd_warmup_frac:0.010000 wsd_stable_frac:0.750000 wsd_decay_style:cosine enable_cooldown_beta2:True cooldown_beta2:0.980000",
+                "step:1/10 train_loss:1.2000 train_time:340ms step_avg:560ms tok_s:7800 train_tokens_seen:520000 train_supervised_tokens_seen:500000 ignored_target_tokens_seen:20000 supervised_target_fraction:0.961538",
+                "final_prequant_exact val_loss:0.90000000 val_bpb:1.10000000 train_tokens_seen:520000 train_supervised_tokens_seen:500000 ignored_target_tokens_seen:20000 supervised_target_fraction:0.961538 eval_time:111ms",
+                "Serialized model int8+zlib: 123 bytes (payload:45 raw_torch:67 payload_ratio:8.9x)",
+                "Total submission size int8+zlib: 1000 bytes",
+                "final_int8_zlib_roundtrip_exact val_loss:1.20000000 val_bpb:1.30000000",
+                "quantization_delta_exact val_loss:0.30000000 val_bpb:0.20000000 train_tokens_seen:520000 train_supervised_tokens_seen:500000 ignored_target_tokens_seen:20000 supervised_target_fraction:0.961538",
+            ]
+        )
+    )
+
+    assert parsed["config"]["doc_aligned_batching"] is True
+    assert parsed["config"]["ema_export"] is True
+    assert parsed["config"]["ema_decay"] == pytest.approx(0.9999)
+    assert parsed["config"]["lr_schedule"] == "wsd"
+    assert parsed["config"]["wsd_warmup_frac"] == pytest.approx(0.01)
+    assert parsed["config"]["wsd_stable_frac"] == pytest.approx(0.75)
+    assert parsed["config"]["wsd_decay_style"] == "cosine"
+    assert parsed["config"]["enable_cooldown_beta2"] is True
+    assert parsed["config"]["cooldown_beta2"] == pytest.approx(0.98)
+    assert parsed["train_steps"][0]["train_supervised_tokens_seen"] == 500000
+    assert parsed["train_steps"][0]["ignored_target_tokens_seen"] == 20000
+    assert parsed["final"]["train_supervised_tokens_seen"] == 500000
+    assert parsed["final"]["ignored_target_tokens_seen"] == 20000
+    assert parsed["final"]["supervised_target_fraction"] == pytest.approx(0.961538)
+
+
 def test_parse_failed_run() -> None:
     parsed = parse_log.parse_log("final_int8_zlib_roundtrip val_loss:2.0 val_bpb:1.2 eval_time:123ms")
     assert parsed["status"] == "failed"
@@ -526,6 +976,37 @@ def test_compare_single_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cap
     assert "1.2300*" in output
 
 
+def test_compare_diag_finds_first_nested_difference() -> None:
+    left = "\n".join(
+        [
+            'DIAG:train_reloaded_block0:{"emb":"1|2","attn_norm":"3|4","rotary_cache_before":{"seq_len_cached":0},"enc0":"5|6"}',
+            'DIAG:train_reloaded_block0_cache_prewarmed:{"enc0":"7|8"}',
+        ]
+    )
+    right = "\n".join(
+        [
+            'DIAG:train_reloaded_block0:{"emb":"1|2","attn_norm":"3|4","rotary_cache_before":{"seq_len_cached":16},"enc0":"5|6"}',
+            'DIAG:train_reloaded_block0_cache_prewarmed:{"enc0":"7|8"}',
+        ]
+    )
+
+    diff = compare_diag.compare_diag_text(left, right)
+
+    assert diff["first_diff_path"] == "train_reloaded_block0.rotary_cache_before.seq_len_cached"
+    assert diff["left_value"] == 0
+    assert diff["right_value"] == 16
+
+
+def test_compare_diag_reports_missing_label() -> None:
+    left = 'DIAG:train_reloaded_block0_cache_cleared:{"enc0":"1|2"}'
+    right = ""
+
+    diff = compare_diag.compare_diag_text(left, right)
+
+    assert diff["missing_label"] == "train_reloaded_block0_cache_cleared"
+    assert diff["first_diff_path"] == "train_reloaded_block0_cache_cleared"
+
+
 def test_compare_includes_replay_trust_columns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -545,6 +1026,18 @@ def test_compare_includes_replay_trust_columns(
     assert "RldΔ" in output
     assert "+0.2500" in output
     assert "+0.1000" in output
+
+
+def test_compare_includes_supervised_fraction_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    write_metrics(metrics_path, run_id="solo", val_bpb=1.23, val_loss=2.34, supervised_target_fraction=0.961538)
+    monkeypatch.setattr(sys, "argv", ["compare.py", str(metrics_path)])
+    compare.main()
+    output = capsys.readouterr().out
+    assert "Sup%" in output
+    assert "96.2%" in output
 
 
 def test_compare_sorts_by_bpb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

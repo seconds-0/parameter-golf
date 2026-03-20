@@ -1,0 +1,18 @@
+extends: baseline.yaml
+name: phase1_e28_asym3020_p1
+description: "P1 asymmetric logit softcap candidate cap_pos=30 cap_neg=20"
+hypothesis_id: "E28-3020"
+group: "track-c-logits"
+notes: "Asymmetric logit softcap with cap_pos=30 and cap_neg=20 on the promoted WSD base."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  LOGIT_SOFTCAP_POS: "30"
+  LOGIT_SOFTCAP_NEG: "20"
