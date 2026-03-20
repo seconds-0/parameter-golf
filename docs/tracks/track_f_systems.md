@@ -19,7 +19,7 @@ The experiment infrastructure must be trustworthy before any experimental result
 - All new experiment knobs as env vars (auto-discovered by config_utils)
 
 ## Status
-Trusted for launch/measurement on both the training path and standalone saved-artifact replay path. `P-01`, `P-02`, `P-03`, `P-04`, `P-05`, `P-06`, `X-01`, `X-02`, `X-05`, `E00`, `E01`, `E02`, `E27`, `E32`, and `E35` are done, and the first baseline exporter sweeps `E03`/`E04` are also complete and flat. There is no urgent Track F blocker right now; the broader repo next tranche is `E28` on top of the promoted WSD base, with `E24` as the next Track B-specific branch if we want to stay on export retention after that. Detailed closeout review for the Track F experiment branch: [E27](../postmortems/e27_doc_aligned_batching.md).
+Trusted for launch/measurement on both the training path and standalone saved-artifact replay path. `P-01`, `P-02`, `P-03`, `P-04`, `P-05`, `P-06`, `X-01`, `X-02`, `X-05`, `E00`, `E01`, `E02`, `E27`, `E28`, `E32`, and `E35` are done, and the first baseline exporter sweeps `E03`/`E04` are also complete and flat. There is no urgent Track F blocker right now; the broader repo next tranche is `E30` on top of the promoted WSD + asymmetric `(20,30)` base, with `E24a` as the next Track B-specific branch if we want to stay on export retention after that. Detailed closeout review for the Track F experiment branch: [E27](../postmortems/e27_doc_aligned_batching.md).
 
 ## Learnings
 - MLX lazy eval bug fixed (mx.synchronize → mx.eval)

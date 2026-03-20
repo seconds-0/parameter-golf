@@ -66,10 +66,10 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 | Exp | What | Conflict |
 |-----|------|----------|
 | **E27** | Document-aligned batching | None mechanically, but on the current published BOS-delimited shards it is already a killed branch unless the packing strategy changes. |
-| **E28** | Asymmetric logit rescale | Minor: if E31 (MTP) also used, rescale must apply to all heads. |
+| **E28** | Asymmetric logit rescale | Minor: if E31 (MTP) also used, rescale must apply to all heads. Live result now favors the specific `(cap_pos=20, cap_neg=30)` variant. |
 | **E30** | Batch size schedule | None. Orthogonal to LR schedule. |
 
-**Verdict:** These are structurally independent, but the live repo state matters: `E27` was the safest thing to test and it already failed on the current published BOS-delimited shards because only about `69%` of target positions remained supervised. Treat `E27` as killed for the current dataset/packing path; `E28` and `E30` remain open.
+**Verdict:** These are structurally independent, but the live repo state matters: `E27` was the safest thing to test and it already failed on the current published BOS-delimited shards because only about `69%` of target positions remained supervised. `E28` is now complete and promoted, but only for the negative-favored `(20,30)` setting; the positive-heavy asymmetric variants regressed. Treat `E27` as killed, `E28(20,30)` as the active winner, and `E30` as the next open branch.
 
 ---
 
@@ -90,12 +90,13 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 - E30 (batch schedule) + E32 (WSD)
 - E34 (Turbo-Muon) + any schedule change
 - E31 (MTP) + any architecture (zero export cost)
-- E28 (logit rescale) + most things (watch E31 interaction)
+- E28 `(20,30)` (logit rescale) + most things (watch E31 interaction)
 
 **Compose carefully (same axis, diminishing returns):**
 - E24 + E33 + E13 — max 2 of 3 regularizers
 - E03/E04 re-sweep needed after any regularizer change
 - E32 + E35 — now tested on the WSD base and killed in the current repo state
+- Do not sweep more E28 softcap points until another result changes the training/logit distribution materially
 
 **Compose with budget check (artifact-coupled):**
 - E18 + E25 -> E26 — explicitly designed as combo, but verify artifact fits
@@ -114,8 +115,8 @@ Build the final candidate in layers, testing each before adding the next:
 
 **Layer 2 — Recipe (layer on top of L1 winner):**
 - E35 (beta2 cooldown) — already tested on the WSD base and killed; do not include in the active composition stack
-- E30 (batch size schedule) — on top of L1
-- E28 (asymmetric logit rescale)
+- E28 `(20,30)` (asymmetric logit rescale) — now promoted on top of WSD
+- E30 (batch size schedule) — next on top of the WSD + E28 base
 
 **Layer 3 — Export retention (pick best 1-2 from P1 results):**
 - Best of {E24, E33, E13} — pick the one with best qgap improvement
@@ -136,11 +137,11 @@ Build the final candidate in layers, testing each before adding the next:
 
 The suite is NOT a simple list to run sequentially. It's a **decision tree:**
 
-1. Start with the live cheap `E02`-unblocked independent tranche from the current state: `E28` on top of the promoted `E32` WSD base
+1. Start with the live cheap `E02`-unblocked independent tranche from the current state: `E30` on top of the promoted `E32` WSD + `E28(20,30)` base
 2. `E27` is already complete and killed on the current BOS-delimited shard format, so it is no longer part of the active queue unless the packing/data path changes materially
 3. `E23` is also complete and killed on the current short-run proxy, so the live tranche now centers on schedule/logit experiments unless we intentionally switch to Track B and run `E24`
-4. The active base recipe now uses plain WSD because `E35` regressed on top of it; after `E28`, the next Track C side branches are `E30` and `E34`
-5. If Track B is the next lane to push after that tranche, test regularizers individually in this order of discipline: `E24`, then `E33` or `E13`; only re-sweep `E03/E04` after one of those changes the distribution
+4. The active base recipe now uses WSD plus asymmetric `(20,30)` because `E35` regressed and `E28` promoted on top of WSD; after that, the next Track C side branches are `E30` and `E34`
+5. If Track B is the next lane to push after that tranche, test regularizers individually in this order of discipline: `E24a`, then `E24b`, then `E33` or `E13`; only re-sweep `E03/E04` after one of those changes the distribution
 6. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, not default next steps
 7. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches
 
