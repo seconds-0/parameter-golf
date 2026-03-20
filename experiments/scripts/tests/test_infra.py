@@ -58,6 +58,8 @@ E28_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_control_p
 E28_ASYM3020_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_asym3020_p1.yaml"
 E28_ASYM3015_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_asym3015_p1.yaml"
 E28_ASYM2030_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e28_asym2030_p1.yaml"
+E30_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e30_control_p1.yaml"
+E30_BATCH_SCHEDULE_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e30_batch_schedule_p1.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
 BASELINE_LOG = ROOT / "records" / "track_10min_16mb" / "2026-03-17_NaiveBaseline" / "train.log"
 
@@ -268,6 +270,28 @@ def test_validate_e28_asym2030_config() -> None:
     assert run.metadata["hypothesis_id"] == "E28-2030"
 
 
+def test_validate_e30_control_config() -> None:
+    result = config_utils.validate_config(E30_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert "BATCH_SCHEDULE" not in run.env
+    assert run.metadata["hypothesis_id"] == "E30-control"
+
+
+def test_validate_e30_batch_schedule_config() -> None:
+    result = config_utils.validate_config(E30_BATCH_SCHEDULE_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert run.env["BATCH_SCHEDULE"] == "0.3:131072,1.0:524288"
+    assert run.metadata["hypothesis_id"] == "E30"
+
+
 def test_export_eval_parses_env_overrides() -> None:
     parsed = export_eval.parse_env_overrides(["INT8_CLIP_PERCENTILE=99.99995", "INT8_KEEP_FLOAT_MAX_NUMEL=32768"])
     assert parsed == {
@@ -341,6 +365,20 @@ def test_lr_schedule_multiplier_baseline_and_wsd() -> None:
     assert wsd_decay == pytest.approx(0.5)
 
 
+def test_batch_schedule_parser_and_stage_selection() -> None:
+    trainer_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_batch_schedule", ROOT / "train_gpt.py")
+    assert trainer_spec is not None and trainer_spec.loader is not None
+    trainer = importlib.util.module_from_spec(trainer_spec)
+    trainer_spec.loader.exec_module(trainer)
+
+    stages = trainer.parse_batch_schedule("1.0:524288,0.3:131072")
+    assert stages == [(0.3, 131072), (1.0, 524288)]
+    assert trainer.scheduled_batch_tokens(0, 100, stages, 999) == 131072
+    assert trainer.scheduled_batch_tokens(29, 100, stages, 999) == 131072
+    assert trainer.scheduled_batch_tokens(30, 100, stages, 999) == 524288
+    assert trainer.scheduled_batch_tokens(99, 100, stages, 999) == 524288
+
+
 def test_beta2_for_schedule_only_changes_during_wsd_decay() -> None:
     before_decay = train_schedule.beta2_for_schedule(
         base_beta2=0.95,
@@ -399,6 +437,37 @@ def test_apply_logit_softcap_matches_symmetric_formula_and_supports_asymmetry() 
     asymmetric = logit_softcap.apply_logit_softcap(x, 30.0, 20.0)
     assert asymmetric[0].abs() < symmetric[0].abs()
     assert asymmetric[-1] == pytest.approx(symmetric[-1].item())
+
+
+def test_block_only_threads_tok_emb_when_value_embed_gate_is_enabled() -> None:
+    import torch
+
+    train_gpt_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_block_test", ROOT / "train_gpt.py")
+    assert train_gpt_spec is not None and train_gpt_spec.loader is not None
+    train_gpt = importlib.util.module_from_spec(train_gpt_spec)
+    train_gpt_spec.loader.exec_module(train_gpt)
+
+    class DummyAttn(torch.nn.Module):
+        def __init__(self, gate_enabled: bool):
+            super().__init__()
+            self.ve_gate_w = torch.nn.Parameter(torch.zeros(1)) if gate_enabled else None
+            self.seen_tok_emb = "unset"
+
+        def forward(self, x: torch.Tensor, tok_emb: torch.Tensor | None = None) -> torch.Tensor:
+            self.seen_tok_emb = tok_emb
+            return torch.zeros_like(x)
+
+    block = train_gpt.Block(8, 2, 1, 2, 10000.0, 1.5, value_embed_gate=False)
+    block.attn = DummyAttn(gate_enabled=False)
+    x = torch.randn(2, 4, 8)
+    x0 = torch.randn(2, 4, 8)
+    block(x, x0)
+    assert block.attn.seen_tok_emb is None
+
+    gated_block = train_gpt.Block(8, 2, 1, 2, 10000.0, 1.5, value_embed_gate=True)
+    gated_block.attn = DummyAttn(gate_enabled=True)
+    gated_block(x, x0)
+    assert gated_block.attn.seen_tok_emb is x0
 
 
 def test_export_eval_resolve_replay_inputs_prefers_manifest_metadata(tmp_path: Path) -> None:

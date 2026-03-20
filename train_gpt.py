@@ -576,7 +576,11 @@ class Block(nn.Module):
     def forward(self, x: Tensor, x0: Tensor) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x), tok_emb=x0)
+        attn_in = self.attn_norm(x)
+        if self.attn.ve_gate_w is not None:
+            attn_out = self.attn(attn_in, tok_emb=x0)
+        else:
+            attn_out = self.attn(attn_in)
         x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x

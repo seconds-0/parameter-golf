@@ -67,9 +67,9 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 |-----|------|----------|
 | **E27** | Document-aligned batching | None mechanically, but on the current published BOS-delimited shards it is already a killed branch unless the packing strategy changes. |
 | **E28** | Asymmetric logit rescale | Minor: if E31 (MTP) also used, rescale must apply to all heads. Live result now favors the specific `(cap_pos=20, cap_neg=30)` variant. |
-| **E30** | Batch size schedule | None. Orthogonal to LR schedule. |
+| **E30** | Batch size schedule | None. Orthogonal to LR schedule. Live result now says it should be treated as part of the active base, not a pending side branch. |
 
-**Verdict:** These are structurally independent, but the live repo state matters: `E27` was the safest thing to test and it already failed on the current published BOS-delimited shards because only about `69%` of target positions remained supervised. `E28` is now complete and promoted, but only for the negative-favored `(20,30)` setting; the positive-heavy asymmetric variants regressed. Treat `E27` as killed, `E28(20,30)` as the active winner, and `E30` as the next open branch.
+**Verdict:** These are structurally independent, but the live repo state matters: `E27` was the safest thing to test and it already failed on the current published BOS-delimited shards because only about `69%` of target positions remained supervised. `E28` is now complete and promoted, but only for the negative-favored `(20,30)` setting; the positive-heavy asymmetric variants regressed. `E30` is now also complete and promoted under a matched eager fallback, so the active Group F stack is asymmetric `(20,30)` plus the early-small-batch schedule.
 
 ---
 
@@ -116,7 +116,7 @@ Build the final candidate in layers, testing each before adding the next:
 **Layer 2 — Recipe (layer on top of L1 winner):**
 - E35 (beta2 cooldown) — already tested on the WSD base and killed; do not include in the active composition stack
 - E28 `(20,30)` (asymmetric logit rescale) — now promoted on top of WSD
-- E30 (batch size schedule) — next on top of the WSD + E28 base
+- E30 (batch size schedule) — now promoted on top of the WSD + E28 base
 
 **Layer 3 — Export retention (pick best 1-2 from P1 results):**
 - Best of {E24, E33, E13} — pick the one with best qgap improvement
@@ -137,10 +137,10 @@ Build the final candidate in layers, testing each before adding the next:
 
 The suite is NOT a simple list to run sequentially. It's a **decision tree:**
 
-1. Start with the live cheap `E02`-unblocked independent tranche from the current state: `E30` on top of the promoted `E32` WSD + `E28(20,30)` base
+1. Start with the live cheap `E02`-unblocked independent tranche from the current state: `E34a` on top of the promoted `E32` WSD + `E28(20,30)` + `E30` base
 2. `E27` is already complete and killed on the current BOS-delimited shard format, so it is no longer part of the active queue unless the packing/data path changes materially
 3. `E23` is also complete and killed on the current short-run proxy, so the live tranche now centers on schedule/logit experiments unless we intentionally switch to Track B and run `E24`
-4. The active base recipe now uses WSD plus asymmetric `(20,30)` because `E35` regressed and `E28` promoted on top of WSD; after that, the next Track C side branches are `E30` and `E34`
+4. The active base recipe now uses WSD plus asymmetric `(20,30)` plus the `E30` early-small-batch schedule. `E30` promoted under a matched eager fallback because fresh-host `torch.compile` is currently unstable on Vast, so later cheap P1 side branches should either use the same fallback or wait for the compile path to be repaired. The next Track C side branch is `E34a`
 5. If Track B is the next lane to push after that tranche, test regularizers individually in this order of discipline: `E24a`, then `E24b`, then `E33` or `E13`; only re-sweep `E03/E04` after one of those changes the distribution
 6. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, not default next steps
 7. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches
