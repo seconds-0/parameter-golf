@@ -1,0 +1,21 @@
+extends: baseline.yaml
+name: phase1_cal06_e30_compiled_control_p1_prime
+description: "Prime compiled 1xH100 control for E30 confirmation"
+hypothesis_id: "CAL-06-control"
+group: "compiled-check"
+notes: "Compiled Prime 1xH100 control on the promoted WSD + asymmetric (20,30) base. Uses the repo-default dataset path so the Prime host can self-bootstrap data cleanly."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  TMPDIR: "/workspace/pgolf-tmp"
+  TORCHINDUCTOR_CACHE_DIR: "/workspace/torchinductor-cache"
+  TRITON_CACHE_DIR: "/workspace/triton-cache"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  LOGIT_SOFTCAP_POS: "20"
+  LOGIT_SOFTCAP_NEG: "30"
