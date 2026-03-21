@@ -1696,6 +1696,53 @@ def test_ensure_remote_data_uses_flock(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config_utils.remote_python_command("/shared", "data/cached_challenge_fineweb.py --variant sp1024") in commands[1]
 
 
+def test_ensure_remote_data_forwards_hf_auth_for_bootstrap_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[str] = []
+
+    def fake_ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        code = 1 if command.startswith("test -f ") else 0
+        return subprocess.CompletedProcess(["ssh", host, command], code, "", "")
+
+    monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_token")
+    monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
+    manifest = {
+        "host": "example",
+        "resolved_env": {
+            "DATA_PATH": "/shared/data/datasets/fineweb10B_sp1024",
+            "TOKENIZER_PATH": "/shared/data/tokenizers/fineweb_1024_bpe.model",
+            "DATASET_VARIANT": "sp1024",
+        },
+        "machine_remote_dir": "/shared",
+    }
+
+    launch_runtime.ensure_remote_data(manifest)
+
+    assert "export HF_TOKEN=hf_secret_token" in commands[1]
+    assert "export HUGGINGFACE_HUB_TOKEN=hf_secret_token" in commands[1]
+    assert config_utils.remote_python_command("/shared", "data/cached_challenge_fineweb.py --variant sp1024") in commands[1]
+
+
+def test_dataset_bootstrap_env_exports_prefers_hf_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HF_TOKEN", "hf_primary")
+    monkeypatch.setenv("HUGGINGFACE_HUB_TOKEN", "hf_secondary")
+
+    exports = launch_runtime.dataset_bootstrap_env_exports()
+
+    assert exports == [
+        "export HF_TOKEN=hf_primary",
+        "export HUGGINGFACE_HUB_TOKEN=hf_primary",
+    ]
+
+
+def test_dataset_bootstrap_env_exports_empty_without_local_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
+
+    assert launch_runtime.dataset_bootstrap_env_exports() == []
+
+
 def test_ensure_remote_data_rejects_custom_missing_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         launch_runtime,

@@ -35,6 +35,18 @@ def q(value: str) -> str:
     return shlex.quote(value)
 
 
+def dataset_bootstrap_env_exports() -> list[str]:
+    """Return shell exports needed only for remote dataset bootstrap."""
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    if not token:
+        return []
+    quoted = q(token)
+    return [
+        f"export HF_TOKEN={quoted}",
+        f"export HUGGINGFACE_HUB_TOKEN={quoted}",
+    ]
+
+
 def run_cmd(cmd: list[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, capture_output=capture, check=check)
 
@@ -251,11 +263,18 @@ def ensure_remote_data(manifest: dict[str, Any]) -> None:
             f"DATA_PATH={data_path!r} TOKENIZER_PATH={tokenizer_path!r}"
         )
     shared = str(manifest["machine_remote_dir"])
+    bootstrap_exports = dataset_bootstrap_env_exports()
+    bootstrap_prefix = " ".join(bootstrap_exports)
+    bootstrap_body = remote_python_command(shared, f"data/cached_challenge_fineweb.py --variant {q(variant)}")
+    if bootstrap_prefix:
+        bootstrap_cmd = f"{bootstrap_prefix} && {bootstrap_body}"
+    else:
+        bootstrap_cmd = bootstrap_body
     ssh(
         manifest["host"],
         " ".join(
             [
-                f"(cd {q(shared)} && flock -x /tmp/pgolf_data.lock {remote_python_command(shared, f'data/cached_challenge_fineweb.py --variant {q(variant)}')})",
+                f"(cd {q(shared)} && flock -x /tmp/pgolf_data.lock {bootstrap_cmd})",
             ]
         ),
     )
