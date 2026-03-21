@@ -139,14 +139,15 @@ Build the final candidate in layers, testing each before adding the next:
 
 The suite is NOT a simple list to run sequentially. It's a **decision tree:**
 
-1. Start with the live cheap `E02`-unblocked independent tranche from the current state: `E24a` fixed L2 weight decay on top of the promoted `E32` WSD + `E28(20,30)` + `E30` base
+1. The live promoted proxy base is now `E32` WSD + `E28(20,30)` + `E30`
 2. `E27` is already complete and killed on the current BOS-delimited shard format, so it is no longer part of the active queue unless the packing/data path changes materially
 3. `E23` is also complete and killed on the current short-run proxy, so the live tranche now centers on schedule/logit experiments unless we intentionally switch to Track B and run `E24`
-4. The active base recipe now uses WSD plus asymmetric `(20,30)` plus the `E30` early-small-batch schedule. `E30` promoted under a matched eager fallback because fresh-host `torch.compile` is currently unstable on Vast, so later cheap P1 side branches should either use the same fallback or wait for the compile path to be repaired. `E34a` is complete and effectively neutral, and `E34c` is complete with a real but below-threshold gain, so the next disciplined diversification move is `E24a`
-5. `E34c` kept the optimizer lane alive, but it did not clear the promote bar strongly enough to justify another same-family tweak before diversifying. That makes `E24a` the better next move than an immediate `E34b` or architecture pivot.
-6. After `E24a`, the next disciplined Track B sequence is `E24b`, then `E33` or `E13`; only re-sweep `E03/E04` after one of those changes the distribution materially.
-7. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, but not the default next steps while cheaper optimizer and regularization branches are still open.
-8. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches
+4. The active base recipe now uses WSD plus asymmetric `(20,30)` plus the `E30` early-small-batch schedule. `E30` promoted under a matched eager fallback because fresh-host `torch.compile` is currently unstable on Vast, so later cheap P1 side branches should either use the same fallback or wait for the compile path to be repaired.
+5. `E24a` then answered the first Track B diversification question decisively in the negative: the very first nonzero decay point (`wd=0.1`) catastrophically regressed both prequant and post-roundtrip quality, so the sweep was stopped early and the branch is dead.
+6. That means the next disciplined move is the first real `8xH100` Runpod calibration on the current promoted stack, not another proxy branch by default.
+7. After that full calibration, the likely cheap follow-up set is `E36a/E36b` for eval-only softcap checks, or `E24b`, `E33`, or `E13` one at a time if we want to keep pushing Track B regularization.
+8. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, but not the default next steps while cheaper optimizer and regularization branches are still open.
+9. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches.
 9. Full-run cadence is now explicit rather than vibe-based: keep `Vast` as the default `1xH100` proxy lane, use `Runpod` for planned `8xH100` full runs, and cash out another full recalibration whenever the active promoted proxy stack gains `0.010` post-roundtrip `val_bpb` versus the last stack that was measured on a real full run. A single `0.020` proxy leap can trigger an immediate retest.
 
 No experiments are truly "wasted" — even if E25 is superseded by E26, the E25 P1 result tells us whether SwiGLU activation quality is worth pursuing at all.
@@ -179,4 +180,4 @@ E34a and E34b are alternatives for faster orthogonalization. E34c is a different
 Practical prioritization note:
 - `E34a` is complete and came back effectively neutral: `PolarExpress-5` was almost tied on quality, and `PolarExpress-4` traded a tiny quality loss for a tiny speed gain.
 - `E34c` is also now complete: NorMuon improved quality slightly, but only by about `-0.0012` post-roundtrip bpb, which is below the promote bar.
-- That means the optimizer lane is still alive, but the better immediate diversification move is `E24a`, not `E34b`, unless a later result makes another Muon-internals pass look newly attractive.
+- That means the optimizer lane is still alive, but after `E24a` failed the better immediate move is the first real `8xH100` calibration on the current promoted stack, not another Muon-internals pass by default.

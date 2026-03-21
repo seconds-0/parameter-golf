@@ -65,6 +65,8 @@ E34A_POLAREXPRESS5_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34a_p
 E34A_POLAREXPRESS4_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34a_polarexpress4_p1.yaml"
 E34C_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34c_control_p1.yaml"
 E34C_NORMUON_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34c_normuon_p1.yaml"
+E24A_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e24a_control_p1.yaml"
+E24A_WD01_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e24a_wd01_p1.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
 BASELINE_LOG = ROOT / "records" / "track_10min_16mb" / "2026-03-17_NaiveBaseline" / "train.log"
 
@@ -340,6 +342,23 @@ def test_validate_e34c_normuon_config() -> None:
     assert run.env["MUON_ADAPTIVE_MODE"] == "normuon"
     assert run.env["MUON_ADAPTIVE_BETA2"] == "0.95"
     assert run.metadata["hypothesis_id"] == "E34c"
+
+
+def test_validate_e24a_control_config() -> None:
+    result = config_utils.validate_config(E24A_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["MUON_ORTHO_BACKEND"] == "newtonschulz5"
+    assert run.env["MUON_ADAPTIVE_MODE"] == "none"
+    assert run.metadata["hypothesis_id"] == "E24a-control"
+
+
+def test_validate_e24a_wd01_config() -> None:
+    result = config_utils.validate_config(E24A_WD01_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["FIXED_WEIGHT_DECAY"] == "0.1"
+    assert run.metadata["hypothesis_id"] == "E24a-0.1"
 
 
 def test_export_eval_parses_env_overrides() -> None:

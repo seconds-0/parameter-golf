@@ -23,6 +23,7 @@ Each post-mortem answers the same questions:
 | [E03](./e03_exporter_clip_star.md) | Flat / no win | High | Best clip setting was still slightly worse than the trusted baseline, and the default clip was effectively tied | Re-sweep only after a distribution-shaping winner changes the checkpoint |
 | [E04](./e04_keep_float_threshold.md) | Flat / no win | High | All cap-safe thresholds were identical; the only quality improvement broke the byte cap badly | Reopen only if tensor size mix or weight distribution changes materially |
 | [E23](./e23_ema_export.md) | Killed | Medium | Export-time EMA catastrophically hurt exported quality while the live training path stayed healthy | Reopen only with a materially different EMA design, longer horizon, or a different export integration |
+| [E24a](./e24a_fixed_weight_decay.md) | Killed | High | The first nonzero fixed weight decay point (`wd=0.1`) catastrophically hurt both prequant and post-roundtrip quality, so the sweep was stopped early | Reopen only with a materially different decay design or on a very different stack |
 | [E27](./e27_doc_aligned_batching.md) | Killed on current shards | High | The current BOS-delimited packing path sacrificed too much supervision and slowed training heavily | Reopen only with a different packing/data format that preserves supervision density |
 | [E28](./e28_asymmetric_logit_rescale.md) | Promoted | High | Only the negative-favored asymmetric softcap `(20,30)` improved post-roundtrip quality, with essentially no runtime cost | Reopen the sweep only if a later training/logit change suggests a different softcap balance |
 | [E30](./e30_batch_schedule.md) | Promoted | Medium | The early-small-batch schedule improved post-roundtrip quality dramatically by fitting far more optimizer steps into the same wallclock | Reconfirm on the standard compiled path once the fresh-host compile regression is fixed |
@@ -46,6 +47,7 @@ The current archive covers every completed non-baseline experiment in the live t
 - `E03`
 - `E04`
 - `E23`
+- `E24a`
 - `E27`
 - `E28`
 - `E30`

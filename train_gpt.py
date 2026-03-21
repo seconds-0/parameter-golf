@@ -83,6 +83,7 @@ class Hyperparameters:
     aux_loss_weight_decay = float(os.environ.get("AUX_LOSS_WEIGHT_DECAY", "0.0"))
     aux_loss_range_reg = float(os.environ.get("AUX_LOSS_RANGE_REG", "0.0"))
     aux_loss_clamp_reg = float(os.environ.get("AUX_LOSS_CLAMP_REG", "0.0"))
+    fixed_weight_decay = float(os.environ.get("FIXED_WEIGHT_DECAY", "0.0"))
     cautious_weight_decay = float(os.environ.get("CAUTIOUS_WEIGHT_DECAY", "0.0"))
     batch_schedule = os.environ.get("BATCH_SCHEDULE", "")
 
@@ -1285,8 +1286,15 @@ def main() -> None:
             f"range_reg={args.aux_loss_range_reg} clamp_reg={args.aux_loss_clamp_reg}"
         )
     batch_stages = parse_batch_schedule(args.batch_schedule)
+    decay_named_params = [
+        (name, p)
+        for name, p in base_model.named_parameters()
+        if p.ndim == 2 and not any(pat in name for pat in CONTROL_TENSOR_NAME_PATTERNS)
+    ]
     if batch_stages:
         log0(f"batch_schedule:{args.batch_schedule} stages:{batch_stages}")
+    if args.fixed_weight_decay > 0:
+        log0(f"fixed_weight_decay:{args.fixed_weight_decay}")
     if args.cautious_weight_decay > 0:
         log0(f"cautious_weight_decay:{args.cautious_weight_decay}")
     if args.cooldown_beta2 > 0:
@@ -1435,12 +1443,15 @@ def main() -> None:
             torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
         for opt in optimizers:
             opt.step()
+        if args.fixed_weight_decay > 0:
+            with torch.no_grad():
+                decay_scale = 1.0 - scale * args.fixed_weight_decay
+                for _, p in decay_named_params:
+                    p.data.mul_(decay_scale)
         if args.cautious_weight_decay > 0:
             with torch.no_grad():
-                for name, p in base_model.named_parameters():
-                    if p.ndim != 2 or p.grad is None:
-                        continue
-                    if any(pat in name for pat in CONTROL_TENSOR_NAME_PATTERNS):
+                for _, p in decay_named_params:
+                    if p.grad is None:
                         continue
                     # Decay only where gradient and weight agree in sign
                     # (gradient is already pushing toward zero)
