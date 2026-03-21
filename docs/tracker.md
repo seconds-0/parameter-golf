@@ -155,11 +155,15 @@
 - Static exporter-only tuning of quantization knobs is still exhausted for this checkpoint. `E36a/b` remain attractive zero-training eval-only ideas, but they are now explicitly side branches rather than the default next move, and `E36c` should stay deferred until code support for plain temperature scaling exists.
 - `CAL-01`, the first real `8xH100` Runpod calibration on the promoted proxy stack, failed directionally. The run `phase3_calibration_wsd_e28_e30-20260321-024914-5924c918` was watchdog-killed at about `580.8s` after a strictly worsening four-point validation tail, so it never reached final exact/export eval. The useful signal is still strong: its best live `val_bpb` was only `1.3372` at step `6200`, and it underperformed the trusted baseline throughout training by roughly `+0.09` to `+0.15` bpb at matched stages.
 - That means the current promoted proxy stack (`E32` + `E28(20,30)` + `E30`) is **not** yet a trusted full candidate. The proxy lane is directionally useful, but our proxy-to-full mapping is currently over-optimistic.
+- The sharpest reviewed diagnosis is that `E30` is now the leading suspect, not just because it was the biggest proxy win, but because it was promoted under an eager fallback regime and then composed into a compiled full run. Its batch transition also lines up almost exactly with the full-run curve inflection near step `6200`, while WSD is still in the stable max-LR phase.
 - `E34c` still matters as evidence: NorMuon improved both prequant and post-roundtrip quality slightly, so the optimizer lane is not dead. But after `CAL-01`, the next best use of budget is no longer another cheap proxy branch by default.
 - The next tranche should be a full-run decomposition tranche on Runpod:
   - same-provider compiled baseline control
   - soften or disable the regression-tail watchdog for full calibrations so we always get final exact/export metrics
-  - targeted full ablations starting with `E30`
+  - `E32` alone on full
+  - then `E32 + E28` on full
+  - then targeted `E30` ablations and transition-timing checks
+  - plus a compiled `1xH100` Runpod datapoint for `E30` to resolve the compile/eager confound
 - `E36a/E36b` remain interesting zero-training side branches, but they should wait until we repair the proxy-to-full calibration loop.
 - `E16` KV-head rebudget and `E25` SwiGLU remain good medium-priority branches, but they are not the default next move after `E34a`. They are structurally more invasive and depend more on follow-on composition (`E17` for `E16`, param-budget tradeoffs for `E25`) than the cheaper optimizer/regularization branches above.
 - `E31a` MTP and `E18` layer sharing remain later, higher-variance branches. Right now the evidence says "more effective steps" is winning harder than "richer but heavier steps," so we should not front-load overhead-heavy ideas until the cheaper optimizer and regularization paths are exhausted or we have a fuller calibration run.
