@@ -10,6 +10,7 @@ The experiment infrastructure must be trustworthy before any experimental result
 - **E01**: Baseline P1 control
 - **E02**: Baseline 8xH100 reproduction
 - **E27**: Document-aligned batching — test document-respecting training windows on the published BOS-delimited shards without regenerating data. Implemented by splitting training sequences on `bos_id`, padding short tails with `bos_id`, and masking padded targets with `-100`. Kill if val_bpb regresses by >0.002 or if supervision waste dominates the run. Ref: [NanoGPT speedrun 1.6](../references/nanogpt_speedrun_techniques.md#16-document-aligned-batching). **Complete, killed** — the paired P1 result on current shards was strongly negative.
+- **E37**: Skip periodic validation — set `VAL_LOSS_EVERY=0` to remove ~20 validation pauses (~25-30s total) and recover ~900 additional optimizer steps within the same wallclock. Same mechanism as E30 (more steps = better quality). Config-only change, zero code. Kill if Δpq ≥ +0.004. Promote if Δpq ≤ -0.003 or measurably more steps completed.
 
 ## Key Principles
 - No model conclusion is trustworthy until E02 passes (within 0.003 bpb of baseline); E00 and E01 exist only to validate the harness

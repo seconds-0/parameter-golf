@@ -47,6 +47,7 @@
 | [ ] | E36a | Eval-time softcap: symmetric scale sweep (15,15)→(45,45) on promoted stack | Export | B | E02, X-05 |
 | [ ] | E36b | Eval-time softcap: asymmetric local search around active (20,30) base | Export | B | E02, X-05 |
 | [ ] | E36c | Eval-time temperature scaling logits/T (requires code support) | Export | B | E02, X-05 |
+| [ ] | E37 | Skip periodic validation: VAL_LOSS_EVERY=0 (keep final only, recover ~900 steps) | P1 | F | E02 |
 
 ## Phase 2: Tokenizer First, Then Recipe
 
