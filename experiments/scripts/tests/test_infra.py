@@ -63,6 +63,8 @@ E30_BATCH_SCHEDULE_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e30_ba
 E34A_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34a_control_p1.yaml"
 E34A_POLAREXPRESS5_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34a_polarexpress5_p1.yaml"
 E34A_POLAREXPRESS4_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34a_polarexpress4_p1.yaml"
+E34C_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34c_control_p1.yaml"
+E34C_NORMUON_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34c_normuon_p1.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
 BASELINE_LOG = ROOT / "records" / "track_10min_16mb" / "2026-03-17_NaiveBaseline" / "train.log"
 
@@ -323,6 +325,23 @@ def test_validate_e34a_polarexpress4_config() -> None:
     assert run.metadata["hypothesis_id"] == "E34a-4"
 
 
+def test_validate_e34c_control_config() -> None:
+    result = config_utils.validate_config(E34C_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["MUON_ADAPTIVE_MODE"] == "none"
+    assert run.metadata["hypothesis_id"] == "E34c-control"
+
+
+def test_validate_e34c_normuon_config() -> None:
+    result = config_utils.validate_config(E34C_NORMUON_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.env["MUON_ADAPTIVE_MODE"] == "normuon"
+    assert run.env["MUON_ADAPTIVE_BETA2"] == "0.95"
+    assert run.metadata["hypothesis_id"] == "E34c"
+
+
 def test_export_eval_parses_env_overrides() -> None:
     parsed = export_eval.parse_env_overrides(["INT8_CLIP_PERCENTILE=99.99995", "INT8_KEEP_FLOAT_MAX_NUMEL=32768"])
     assert parsed == {
@@ -516,6 +535,44 @@ def test_muon_orthogonalize_supports_polarexpress_backend() -> None:
     assert pe.shape == g.shape
     assert ns.dtype == torch.bfloat16
     assert pe.dtype == torch.bfloat16
+
+
+def test_muon_adaptive_scaling_supports_normuon_mode() -> None:
+    import torch
+
+    train_gpt_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_muon_adaptive_test", ROOT / "train_gpt.py")
+    assert train_gpt_spec is not None and train_gpt_spec.loader is not None
+    train_gpt = importlib.util.module_from_spec(train_gpt_spec)
+    train_gpt_spec.loader.exec_module(train_gpt)
+
+    update = torch.randn(16, 8, dtype=torch.bfloat16)
+    second_momentum = torch.zeros_like(update[..., :1], dtype=torch.float32)
+    scaled = train_gpt.muon_apply_adaptive_scaling(update, second_momentum, mode="normuon", beta2=0.95)
+
+    assert scaled.shape == update.shape
+    assert second_momentum.shape == update[..., :1].shape
+    assert second_momentum.dtype == torch.float32
+    assert torch.isfinite(scaled).all()
+    assert torch.isfinite(second_momentum).all()
+    assert scaled.norm().item() == pytest.approx(update.norm().item(), rel=1e-2)
+
+
+def test_muon_adaptive_scaling_tolerates_dtype_mismatch() -> None:
+    import torch
+
+    train_gpt_spec = importlib.util.spec_from_file_location("pgolf_train_gpt_muon_adaptive_dtype_test", ROOT / "train_gpt.py")
+    assert train_gpt_spec is not None and train_gpt_spec.loader is not None
+    train_gpt = importlib.util.module_from_spec(train_gpt_spec)
+    train_gpt_spec.loader.exec_module(train_gpt)
+
+    update = torch.randn(12, 6, dtype=torch.bfloat16)
+    second_momentum = torch.zeros_like(update[..., :1])
+    scaled = train_gpt.muon_apply_adaptive_scaling(update, second_momentum, mode="normuon", beta2=0.95)
+
+    assert scaled.shape == update.shape
+    assert second_momentum.dtype == torch.bfloat16
+    assert torch.isfinite(scaled).all()
+    assert torch.isfinite(second_momentum).all()
 
 
 def test_export_eval_resolve_replay_inputs_prefers_manifest_metadata(tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ Each post-mortem answers the same questions:
 | [E30](./e30_batch_schedule.md) | Promoted | Medium | The early-small-batch schedule improved post-roundtrip quality dramatically by fitting far more optimizer steps into the same wallclock | Reconfirm on the standard compiled path once the fresh-host compile regression is fixed |
 | [E32](./e32_wsd_schedule.md) | Promoted | High | Same-host P1 run improved both prequant and post-roundtrip quality with only modest runtime cost | Revisit only if later compositions reveal incompatibility or a better schedule replacement |
 | [E34a](./e34a_polar_express.md) | Neutral / no promote | Medium | `PolarExpress-5` was essentially tied and `PolarExpress-4` was slightly faster but slightly worse, so the branch did not clear the promote bar | Reopen only if a later optimizer lane result suggests the speed/quality trade should be composed or re-measured on the full stack |
+| [E34c](./e34c_normuon.md) | Neutral / no promote | Medium | NorMuon improved both prequant and post-roundtrip quality slightly, but only by about `-0.0012` bpb and with a small runtime cost, so it stayed below the promote bar | Reopen if a later stack amplifies optimizer-quality gains or if another Muon result suggests NorMuon composes better there |
 | [E35](./e35_cooldown_beta2.md) | Killed | High | On top of WSD, cooldown `β₂` made both prequant and post-roundtrip quality worse | Reopen only with a meaningfully different cooldown policy or schedule family |
 
 ## Process Checklist
@@ -50,4 +51,5 @@ The current archive covers every completed non-baseline experiment in the live t
 - `E30`
 - `E32`
 - `E34a`
+- `E34c`
 - `E35`

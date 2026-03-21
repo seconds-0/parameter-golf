@@ -96,6 +96,8 @@ class Hyperparameters:
     muon_momentum = float(os.environ.get("MUON_MOMENTUM", 0.95))
     muon_ortho_backend = os.environ.get("MUON_ORTHO_BACKEND", "newtonschulz5")
     muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 5))
+    muon_adaptive_mode = os.environ.get("MUON_ADAPTIVE_MODE", "none")
+    muon_adaptive_beta2 = float(os.environ.get("MUON_ADAPTIVE_BETA2", 0.95))
     muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.85))
     muon_momentum_warmup_steps = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 500))
     beta1 = float(os.environ.get("BETA1", 0.9))
@@ -170,11 +172,43 @@ def muon_orthogonalize(G: Tensor, backend: str, steps: int) -> Tensor:
     raise ValueError(f"unknown Muon orthogonalization backend: {backend}")
 
 
+def muon_apply_adaptive_scaling(update: Tensor, second_momentum: Tensor, mode: str, beta2: float) -> Tensor:
+    if mode == "none":
+        return update
+    if mode != "normuon":
+        raise ValueError(f"unknown Muon adaptive mode: {mode}")
+    original_norm = update.norm(dim=(-2, -1), keepdim=True)
+    second_moment = torch.mean(update.float() * update.float(), dim=-1, keepdim=True)
+    second_momentum.lerp_(second_moment.to(second_momentum.dtype), 1 - beta2)
+    step_size = second_momentum.sqrt().add_(1e-10).reciprocal_().to(dtype=update.dtype)
+    update = update * step_size
+    renorm = update.norm(dim=(-2, -1), keepdim=True).add_(1e-10)
+    return update * (original_norm / renorm)
+
+
 class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr: float, momentum: float, backend: str, backend_steps: int, nesterov: bool = True):
+    def __init__(
+        self,
+        params,
+        lr: float,
+        momentum: float,
+        backend: str,
+        backend_steps: int,
+        adaptive_mode: str,
+        adaptive_beta2: float,
+        nesterov: bool = True,
+    ):
         super().__init__(
             params,
-            dict(lr=lr, momentum=momentum, backend=backend, backend_steps=backend_steps, nesterov=nesterov),
+            dict(
+                lr=lr,
+                momentum=momentum,
+                backend=backend,
+                backend_steps=backend_steps,
+                adaptive_mode=adaptive_mode,
+                adaptive_beta2=adaptive_beta2,
+                nesterov=nesterov,
+            ),
         )
 
     @torch.no_grad()
@@ -196,6 +230,8 @@ class Muon(torch.optim.Optimizer):
             momentum = group["momentum"]
             backend = group["backend"]
             backend_steps = group["backend_steps"]
+            adaptive_mode = group["adaptive_mode"]
+            adaptive_beta2 = group["adaptive_beta2"]
             nesterov = group["nesterov"]
 
             total_params = sum(int(p.numel()) for p in params)
@@ -208,11 +244,21 @@ class Muon(torch.optim.Optimizer):
                     state = self.state[p]
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
+                    if adaptive_mode != "none" and "second_momentum_buffer" not in state:
+                        # Keep the adaptive second moment in fp32 for stable updates on bf16 grads.
+                        state["second_momentum_buffer"] = torch.zeros_like(g[..., :1], dtype=torch.float32)
                     buf = state["momentum_buffer"]
                     buf.mul_(momentum).add_(g)
                     if nesterov:
                         g = g.add(buf, alpha=momentum)
                     g = muon_orthogonalize(g, backend=backend, steps=backend_steps)
+                    if adaptive_mode != "none":
+                        g = muon_apply_adaptive_scaling(
+                            g,
+                            state["second_momentum_buffer"],
+                            mode=adaptive_mode,
+                            beta2=adaptive_beta2,
+                        )
                     # Scale correction from Muon reference implementations.
                     g *= max(1, g.size(0) / g.size(1)) ** 0.5
                     updates_flat[curr : curr + p.numel()] = g.reshape(-1)
@@ -1158,6 +1204,8 @@ def main() -> None:
         momentum=args.muon_momentum,
         backend=args.muon_ortho_backend,
         backend_steps=args.muon_backend_steps,
+        adaptive_mode=args.muon_adaptive_mode,
+        adaptive_beta2=args.muon_adaptive_beta2,
     )
     for group in optimizer_muon.param_groups:
         group["base_lr"] = args.matrix_lr
