@@ -88,6 +88,24 @@ The point is to separate:
 
 `CAL-01` is the example that forces this rule. Even if `E30` phase 1 is genuinely useful, that still does not imply `E30 + E32` is healthy at full scale.
 
+### 7. Full-run data completeness must be verified, not assumed
+
+The later `CAL-03` decomposition attempt exposed a second process bug:
+- the Runpod dataset bootstrap was still filling in train shards in the background
+- the first `CAL-03` started on only `116` train shards
+- the trusted Runpod baseline `CAL-02` had used the full `195`
+- the next layered rung (`CAL-04`) would therefore have compared against a different training set unless caught manually
+
+That means "dataset dir exists" is not a strong enough preflight check for paid full runs.
+
+For full runs we now require:
+- the dataset manifest to be present
+- the on-disk train and val shard counts to match the manifest exactly
+- the tokenizer path to match the manifest-selected tokenizer artifact
+- the dataset bootstrap lock to be free before launch
+
+And the launcher should record that dataset snapshot in the run manifest so mismatches are visible later without log archaeology.
+
 ## Current best hypothesis after CAL-01
 
 - `E30` phase 1 is probably genuinely useful

@@ -10,6 +10,7 @@ env:
   TRAIN_LOG_EVERY: "50"
   VAL_LOSS_EVERY: "200"
   WATCHDOG_POLICY: "calibration"
+  REQUIRE_COMPLETE_DATASET: "1"
   DATA_PATH: "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
   TOKENIZER_PATH: "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
   TMPDIR: "/runpod/pgolf-tmp"

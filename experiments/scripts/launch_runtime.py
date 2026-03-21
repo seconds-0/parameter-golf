@@ -619,6 +619,10 @@ def launch_single(
             )
             if not preflight_result["ok"]:
                 raise RuntimeError(preflight_result["summary"])
+            dataset_info = preflight_result.get("dataset_info")
+            if dataset_info is not None:
+                manifest["dataset_snapshot"] = dataset_info
+                save_manifest(_visible(manifest))
         sync_repo(manifest)
         ensure_remote_data(manifest)
         maybe_install_wandb(manifest)

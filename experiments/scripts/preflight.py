@@ -43,6 +43,107 @@ def _fail(name: str, detail: str) -> dict[str, Any]:
     return {"name": name, "ok": False, "detail": detail}
 
 
+def _dataset_integrity_command(data_path: str, tokenizer_path: str) -> str:
+    return "\n".join(
+        [
+            "python3 - <<'PY'",
+            "import json",
+            "from pathlib import Path",
+            f"data_path = Path({data_path!r})",
+            f"tokenizer_path = Path({tokenizer_path!r})",
+            "dataset_dir = data_path",
+            "root = dataset_dir.parent.parent if dataset_dir.parent.name == 'datasets' else dataset_dir.parent",
+            "manifest_path = root / 'manifest.json'",
+            "payload = {",
+            "    'ok': False,",
+            "    'dataset_dir': str(dataset_dir),",
+            "    'tokenizer_path': str(tokenizer_path),",
+            "    'manifest_path': str(manifest_path),",
+            "    'dataset_name': dataset_dir.name,",
+            "    'actual_train_shards': len(list(dataset_dir.glob('fineweb_train_*.bin'))) if dataset_dir.is_dir() else 0,",
+            "    'actual_val_shards': len(list(dataset_dir.glob('fineweb_val_*.bin'))) if dataset_dir.is_dir() else 0,",
+            "}",
+            "if not manifest_path.is_file():",
+            "    payload['reason'] = f'missing manifest at {manifest_path}'",
+            "    print(json.dumps(payload))",
+            "    raise SystemExit(0)",
+            "manifest = json.loads(manifest_path.read_text(encoding='utf-8'))",
+            "dataset_entry = next((x for x in manifest.get('datasets', []) if x.get('name') == dataset_dir.name), None)",
+            "if dataset_entry is None:",
+            "    payload['reason'] = f'dataset entry {dataset_dir.name} not found in manifest'",
+            "    print(json.dumps(payload))",
+            "    raise SystemExit(0)",
+            "stats = dataset_entry.get('stats') or {}",
+            "payload['expected_train_shards'] = int(stats.get('files_train') or 0)",
+            "payload['expected_val_shards'] = int(stats.get('files_val') or 0)",
+            "tokenizer_name = dataset_entry.get('tokenizer_name')",
+            "payload['tokenizer_name'] = tokenizer_name",
+            "tokenizer_entry = next((x for x in manifest.get('tokenizers', []) if x.get('name') == tokenizer_name), None)",
+            "if tokenizer_entry is None:",
+            "    payload['reason'] = f'tokenizer entry {tokenizer_name} not found in manifest'",
+            "    print(json.dumps(payload))",
+            "    raise SystemExit(0)",
+            "expected_model = tokenizer_entry.get('model_path')",
+            "payload['expected_tokenizer_model_path'] = expected_model",
+            "expected_tokenizer_path = (root / expected_model) if expected_model else None",
+            "payload['expected_tokenizer_path'] = str(expected_tokenizer_path) if expected_tokenizer_path else None",
+            "tokenizer_matches = bool(expected_tokenizer_path and tokenizer_path == expected_tokenizer_path)",
+            "payload['tokenizer_matches_manifest'] = tokenizer_matches",
+            "if payload['actual_train_shards'] != payload['expected_train_shards']:",
+            "    payload['reason'] = (",
+            "        f'train shard mismatch actual={payload[\"actual_train_shards\"]} expected={payload[\"expected_train_shards\"]}'",
+            "    )",
+            "elif payload['actual_val_shards'] != payload['expected_val_shards']:",
+            "    payload['reason'] = (",
+            "        f'val shard mismatch actual={payload[\"actual_val_shards\"]} expected={payload[\"expected_val_shards\"]}'",
+            "    )",
+            "elif not tokenizer_matches:",
+            "    payload['reason'] = (",
+            "        f'tokenizer path mismatch actual={tokenizer_path} expected={expected_tokenizer_path}'",
+            "    )",
+            "elif not tokenizer_path.is_file():",
+            "    payload['reason'] = f'missing tokenizer file {tokenizer_path}'",
+            "else:",
+            "    payload['ok'] = True",
+            "    payload['reason'] = 'dataset matches manifest shard counts'",
+            "print(json.dumps(payload))",
+            "PY",
+        ]
+    )
+
+
+def check_dataset_integrity(
+    host: str,
+    *,
+    data_path: str,
+    tokenizer_path: str,
+) -> dict[str, Any]:
+    lock_proc = ssh_capture(host, "flock -n /tmp/pgolf_data.lock true")
+    if lock_proc.returncode != 0:
+        return {
+            "ok": False,
+            "reason": "dataset bootstrap lock is active",
+            "dataset_dir": data_path,
+            "tokenizer_path": tokenizer_path,
+        }
+    proc = ssh_capture(host, _dataset_integrity_command(data_path, tokenizer_path))
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or "dataset integrity check failed"
+        return {"ok": False, "reason": detail, "dataset_dir": data_path, "tokenizer_path": tokenizer_path}
+    try:
+        payload = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "reason": f"invalid dataset integrity payload: {proc.stdout.strip()}",
+            "dataset_dir": data_path,
+            "tokenizer_path": tokenizer_path,
+        }
+    payload.setdefault("dataset_dir", data_path)
+    payload.setdefault("tokenizer_path", tokenizer_path)
+    return payload
+
+
 def load_preflight_env(config_path_arg: str) -> tuple[dict[str, str] | None, list[str], list[str]]:
     config_path = resolve_path(config_path_arg)
     result = validate_config(config_path)
@@ -142,6 +243,19 @@ def run_preflight_target(
     else:
         results.append(_fail("data", f"missing {data_path} or {tokenizer_path}"))
 
+    dataset_info: dict[str, Any] | None = None
+    if data_proc.returncode == 0 and resolved_env.get("REQUIRE_COMPLETE_DATASET") == "1":
+        dataset_info = check_dataset_integrity(host, data_path=data_path, tokenizer_path=tokenizer_path)
+        if dataset_info.get("ok"):
+            detail = (
+                f"{dataset_info.get('dataset_name')} train={dataset_info.get('actual_train_shards')}"
+                f"/{dataset_info.get('expected_train_shards')} val={dataset_info.get('actual_val_shards')}"
+                f"/{dataset_info.get('expected_val_shards')}"
+            )
+            results.append(_ok("dataset_cardinality", detail))
+        else:
+            results.append(_fail("dataset_cardinality", str(dataset_info.get("reason") or "dataset integrity check failed")))
+
     scratch_proc = ssh_capture(
         host,
         f"mkdir -p {shlex.quote(scratch_dir)}/pgolf_preflight_test "
@@ -156,6 +270,8 @@ def run_preflight_target(
     ok = all(result["ok"] for result in results)
     summary = "preflight passed" if ok else "preflight failed"
     payload = {"ok": ok, "host": host, "machine_name": machine_name, "results": results, "summary": summary}
+    if dataset_info is not None:
+        payload["dataset_info"] = dataset_info
     if print_output:
         print_report(payload)
     return payload

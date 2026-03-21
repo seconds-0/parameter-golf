@@ -175,6 +175,8 @@
   - then targeted `E30` ablations and transition-timing checks
 - The process lesson is now explicit: staged ideas cannot be promoted from short proxies that never enter the later phase. The new proxy policy is documented in [docs/postmortems/proxy_calibration_meta.md](./postmortems/proxy_calibration_meta.md).
 - The stronger process lesson is now also explicit: risky regime-changing ideas should be tested individually first and then re-tested in composition. `CAL-01` was the concrete failure mode that made this rule necessary.
+- The decomposition follow-up exposed a second full-run process bug: the first standalone `CAL-03` launched before the Runpod dataset bootstrap had finished, so it trained on only `116` train shards while the trusted Runpod baseline `CAL-02` had used the full `195`. That makes the first `CAL-03` and the immediately aborted `CAL-04` operationally informative but scientifically invalid for matched comparison.
+- The full-run contract is now tighter because of that miss. Full `Runpod` configs now require an explicit dataset-completeness gate: launch must verify the dataset manifest, exact train/val shard counts, tokenizer-path match, and that no dataset bootstrap lock is active before starting a paid run. The launcher also records that dataset snapshot in the run manifest.
 - `E36a/E36b` remain interesting zero-training side branches, but they should wait until we repair the proxy-to-full calibration loop.
 - `E16` KV-head rebudget and `E25` SwiGLU remain good medium-priority branches, but they are not the default next move after `E34a`. They are structurally more invasive and depend more on follow-on composition (`E17` for `E16`, param-budget tradeoffs for `E25`) than the cheaper optimizer/regularization branches above.
 - `E31a` MTP and `E18` layer sharing remain later, higher-variance branches. Right now the evidence says "more effective steps" is winning harder than "richer but heavier steps," so we should not front-load overhead-heavy ideas until the cheaper optimizer and regularization paths are exhausted or we have a fuller calibration run.
@@ -183,6 +185,7 @@
 - For those `Runpod` full runs, the default purchasing posture is now "spot first, on-demand if needed." These runs are short enough that lower-priced secure-cloud capacity is the right default unless interruptions become a real drag on momentum.
 - Full-run cash-out cadence is now explicit: once a stack has been measured on a real full run, run another full recalibration after the next `0.010` post-roundtrip proxy improvement versus that reference stack, or immediately after any single `0.020` proxy leap.
 - Tokenizer work is still blocked on `X-06` then `E05`, and tokenizer-dependent recipe stars `E10`-`E12` remain blocked on `E09`.
+- There is no active paid cloud state right now. `Runpod` is torn down (`runpodctl pod list` → `[]`) and the next paid full run should only happen after the new dataset-cardinality guardrail is in place and revalidated locally.
 
 ## Recent Learnings
 

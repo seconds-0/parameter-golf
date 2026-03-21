@@ -391,6 +391,7 @@ def test_validate_cal02_baseline_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-02"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["REQUIRE_COMPLETE_DATASET"] == "1"
     assert "LR_SCHEDULE" not in run.env
 
 
@@ -400,6 +401,7 @@ def test_validate_cal03_e32_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-03"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["REQUIRE_COMPLETE_DATASET"] == "1"
     assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
     assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
     assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
@@ -413,6 +415,7 @@ def test_validate_cal04_e32_e28_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-04"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["REQUIRE_COMPLETE_DATASET"] == "1"
     assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
     assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
     assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
@@ -427,6 +430,7 @@ def test_validate_cal05a_e32_e28_e30_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-05a"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["REQUIRE_COMPLETE_DATASET"] == "1"
     assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
     assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
     assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
@@ -441,6 +445,7 @@ def test_validate_cal05b_e32_e28_e30_decay_aligned_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-05b"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["REQUIRE_COMPLETE_DATASET"] == "1"
     assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
     assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
     assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
@@ -455,6 +460,7 @@ def test_validate_cal05c_e32_e28_e30_late_transition_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-05c"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["REQUIRE_COMPLETE_DATASET"] == "1"
     assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
     assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
     assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
@@ -2079,6 +2085,155 @@ def test_preflight_uses_config_selected_paths(tmp_path: Path, monkeypatch: pytes
     assert errors == []
     payload = preflight.run_preflight_target("alpha", config_env=config_env, warnings=warnings, print_output=False)
     assert payload["ok"] is True
+
+
+def test_preflight_requires_complete_dataset_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preflight, "resolve_machine", lambda host: ("alpha", {"host": "root@example", "remote_dir": "/shared", "gpus": 8}, []))
+    python_cmd = config_utils.remote_python_command("/shared", "-c 'import torch; print(torch.cuda.device_count())'")
+    deps_cmd = config_utils.remote_python_command("/shared", "-c 'import sentencepiece, numpy; print(\"ok\")'")
+    disk_cmd = config_utils.remote_python_command(
+        "/shared",
+        '-c \'from pathlib import Path; import shutil; path=Path("/tmp"); '
+        "path.mkdir(parents=True, exist_ok=True); print(int(shutil.disk_usage(str(path)).free / (1024**3)))'",
+    )
+
+    def fake_ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
+        mapping = {
+            "echo ok": "ok\n",
+            "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l": "8\n",
+            python_cmd: "8\n",
+            deps_cmd: "ok\n",
+            disk_cmd: "200\n",
+        }
+        if "PGOLF_PYTHON_BIN" in command and preflight.COMPILE_TOOLCHAIN_CHECK in command:
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "ok\n", "")
+        if command.startswith("test -d "):
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        if command.startswith("mkdir -p /tmp/pgolf_preflight_test"):
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        return subprocess.CompletedProcess(["ssh", host, command], 0, mapping[command], "")
+
+    monkeypatch.setattr(preflight, "ssh_capture", fake_ssh)
+    monkeypatch.setattr(
+        preflight,
+        "check_dataset_integrity",
+        lambda host, *, data_path, tokenizer_path: {
+            "ok": True,
+            "dataset_name": "fineweb10B_sp1024",
+            "actual_train_shards": 195,
+            "expected_train_shards": 195,
+            "actual_val_shards": 1,
+            "expected_val_shards": 1,
+            "reason": "dataset matches manifest shard counts",
+        },
+    )
+    payload = preflight.run_preflight_target(
+        "alpha",
+        config_env={
+            "DATA_PATH": "/shared/data/datasets/fineweb10B_sp1024",
+            "TOKENIZER_PATH": "/shared/data/tokenizers/fineweb_1024_bpe.model",
+            "REQUIRE_COMPLETE_DATASET": "1",
+        },
+        print_output=False,
+    )
+    assert payload["ok"] is True
+    assert payload["dataset_info"]["expected_train_shards"] == 195
+    assert any(result["name"] == "dataset_cardinality" and result["ok"] for result in payload["results"])
+
+
+def test_preflight_fails_when_required_dataset_is_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preflight, "resolve_machine", lambda host: ("alpha", {"host": "root@example", "remote_dir": "/shared", "gpus": 8}, []))
+    python_cmd = config_utils.remote_python_command("/shared", "-c 'import torch; print(torch.cuda.device_count())'")
+    deps_cmd = config_utils.remote_python_command("/shared", "-c 'import sentencepiece, numpy; print(\"ok\")'")
+    disk_cmd = config_utils.remote_python_command(
+        "/shared",
+        '-c \'from pathlib import Path; import shutil; path=Path("/tmp"); '
+        "path.mkdir(parents=True, exist_ok=True); print(int(shutil.disk_usage(str(path)).free / (1024**3)))'",
+    )
+
+    def fake_ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
+        mapping = {
+            "echo ok": "ok\n",
+            "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l": "8\n",
+            python_cmd: "8\n",
+            deps_cmd: "ok\n",
+            disk_cmd: "200\n",
+        }
+        if "PGOLF_PYTHON_BIN" in command and preflight.COMPILE_TOOLCHAIN_CHECK in command:
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "ok\n", "")
+        if command.startswith("test -d "):
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        if command.startswith("mkdir -p /tmp/pgolf_preflight_test"):
+            return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+        return subprocess.CompletedProcess(["ssh", host, command], 0, mapping[command], "")
+
+    monkeypatch.setattr(preflight, "ssh_capture", fake_ssh)
+    monkeypatch.setattr(
+        preflight,
+        "check_dataset_integrity",
+        lambda host, *, data_path, tokenizer_path: {
+            "ok": False,
+            "reason": "train shard mismatch actual=116 expected=195",
+            "actual_train_shards": 116,
+            "expected_train_shards": 195,
+        },
+    )
+    payload = preflight.run_preflight_target(
+        "alpha",
+        config_env={
+            "DATA_PATH": "/shared/data/datasets/fineweb10B_sp1024",
+            "TOKENIZER_PATH": "/shared/data/tokenizers/fineweb_1024_bpe.model",
+            "REQUIRE_COMPLETE_DATASET": "1",
+        },
+        print_output=False,
+    )
+    assert payload["ok"] is False
+    assert payload["dataset_info"]["actual_train_shards"] == 116
+    assert any(result["name"] == "dataset_cardinality" and not result["ok"] for result in payload["results"])
+
+
+def test_launch_single_records_dataset_snapshot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    saved: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        launch_runtime,
+        "save_manifest",
+        lambda manifest: saved.append(dict(manifest)) or (tmp_path / "manifest.json"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "run_preflight_target",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "summary": "preflight passed",
+            "dataset_info": {
+                "ok": True,
+                "dataset_name": "fineweb10B_sp1024",
+                "actual_train_shards": 195,
+                "expected_train_shards": 195,
+                "actual_val_shards": 1,
+                "expected_val_shards": 1,
+            },
+        },
+    )
+    monkeypatch.setattr(launch_runtime, "sync_repo", lambda manifest: None)
+    monkeypatch.setattr(launch_runtime, "ensure_remote_data", lambda manifest: None)
+    monkeypatch.setattr(launch_runtime, "maybe_install_wandb", lambda manifest: None)
+    monkeypatch.setattr(launch_runtime, "verify_remote_dependencies", lambda manifest: None)
+    monkeypatch.setattr(launch_runtime, "start_remote_run", lambda manifest: None)
+
+    run_id = launch_runtime.launch_single(
+        CAL03_E32_FULL_CONFIG,
+        {"REQUIRE_COMPLETE_DATASET": "1"},
+        "phase3_cal03_e32_full",
+        "runpod-8xh100",
+        8,
+        "/workspace/parameter-golf",
+        wait=False,
+        skip_preflight=False,
+    )
+    assert run_id.startswith("phase3_cal03_e32_full-")
+    assert any(manifest.get("dataset_snapshot", {}).get("expected_train_shards") == 195 for manifest in saved)
 
 
 def test_cost_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
