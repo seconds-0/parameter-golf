@@ -68,8 +68,9 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 | **E27** | Document-aligned batching | None mechanically, but on the current published BOS-delimited shards it is already a killed branch unless the packing strategy changes. |
 | **E28** | Asymmetric logit rescale | Minor: if E31 (MTP) also used, rescale must apply to all heads. Live result now favors the specific `(cap_pos=20, cap_neg=30)` variant. |
 | **E30** | Batch size schedule | None. Orthogonal to LR schedule. Live result now says it should be treated as part of the active base, not a pending side branch. |
+| **E36a/b/c** | Eval-time softcap/temperature | Directly related to E28: if training-time softcap changes, E36 needs re-sweep. E36a=symmetric scale, E36b=asymmetric local search, E36c=temperature (deferred). Independent of exporter knobs (E03/E04) and all training experiments. Only affects eval path. |
 
-**Verdict:** These are structurally independent, but the live repo state matters: `E27` was the safest thing to test and it already failed on the current published BOS-delimited shards because only about `69%` of target positions remained supervised. `E28` is now complete and promoted, but only for the negative-favored `(20,30)` setting; the positive-heavy asymmetric variants regressed. `E30` is now also complete and promoted under a matched eager fallback, so the active Group F stack is asymmetric `(20,30)` plus the early-small-batch schedule.
+**Verdict:** These are structurally independent, but the live repo state matters: `E27` was the safest thing to test and it already failed on the current published BOS-delimited shards because only about `69%` of target positions remained supervised. `E28` is now complete and promoted, but only for the negative-favored `(20,30)` setting; the positive-heavy asymmetric variants regressed. `E30` is now also complete and promoted under a matched eager fallback, so the active Group F stack is asymmetric `(20,30)` plus the early-small-batch schedule. `E36a/b` are eval-only sub-sweeps testing whether a different softcap at eval time (vs training time) improves post-roundtrip val_bpb; `E36c` (temperature scaling) is deferred until code support exists. All compose safely with everything since they only modify the eval path.
 
 ---
 
@@ -91,6 +92,7 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 - E34 (Turbo-Muon) + any schedule change
 - E31 (MTP) + any architecture (zero export cost)
 - E28 `(20,30)` (logit rescale) + most things (watch E31 interaction)
+- E36a/b/c (eval-time softcap/temperature) + everything (only changes eval path, not training; re-sweep after training-time softcap changes)
 
 **Compose carefully (same axis, diminishing returns):**
 - E24 + E33 + E13 — max 2 of 3 regularizers

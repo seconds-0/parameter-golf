@@ -6,6 +6,9 @@ The 4-hour run proves export retention is the battlefield: only ~40% of pre-quan
 ## Experiments
 - **E03**: Exporter clip-percentile star (sweep INT8_CLIP_PERCENTILE)
 - **E04**: Keep-float threshold star (sweep INT8_KEEP_FLOAT_MAX_NUMEL)
+- **E36a**: Eval-time softcap symmetric sweep — test overall scale on promoted stack checkpoint using `export_eval.py --set-env`. Points: `(15,15)`, `(20,20)`, `(25,25)`, `(30,30)`, `(45,45)`, `(100,100)`. Control: active `(20,30)`. Question: "should eval-time cap be looser/tighter overall?" Kill if all within ±0.001 of control. Promote if any ≥0.002 better. Zero training cost. Ref: Guo et al. 2017, Wang et al. 2020, Gemma 2.
+- **E36b**: Eval-time softcap asymmetric local search — preserve and vary the active `(20,30)` ratio on promoted stack checkpoint. Points: `(18,27)`, `(18,30)`, `(20,27)`, `(20,33)`, `(22,30)`, `(22,33)`, `(15,30)`, `(20,45)`. Question: "should eval-time asymmetry differ from training-time asymmetry?" Same kill/promote rules. Zero training cost.
+- **E36c**: Eval-time temperature scaling `logits/T` — standard Guo et al. post-hoc calibration. **Deferred** until `EVAL_TEMPERATURE` env var is implemented (~3 lines in train_gpt.py). Not currently wired in the codebase.
 - **E12**: Embedding norm penalty: A=L2 λ=0.01, B=max-norm clip to 95th pct. Kill if val_bpb regresses >0.003 without compensating qgap improvement.
 - **E13**: Clamp-aware regularizer — add `λ * mean(max(0, |W_ij| - clip_threshold_i)²)` per 2D weight matrix to the training loss, where `clip_threshold_i` is the per-row int8 clip boundary. Sweep λ ∈ {0.001, 0.01, 0.1}. Kill if Δpq ≥ +0.004 or step time >8%.
 - **E15**: Compose best exporter settings + best regularizer winner (composition step). Gate: run only after E24/E33/E13 have P1 results.
