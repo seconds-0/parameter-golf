@@ -40,7 +40,7 @@ machines:
     host: "runpod-8xh100-control"
     remote_dir: /workspace/parameter-golf
     gpus: 8
-    hourly_rate: 14.0
+    hourly_rate: 21.52
     shutdown_after_idle_minutes: 0
     labels: [h100, 8gpu, runpod]
   prime-8xh100:

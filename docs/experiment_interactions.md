@@ -21,7 +21,7 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 | **E34** | Turbo-Muon (faster orthogonalization) | Replaces Newton-Schulz internals. Independent of everything else. |
 | **E24** | Weight decay (adds penalty to optimizer step) | Independent of E34. Different concern. |
 
-**Verdict:** E34 and E24 live on different axes — speed vs regularization. Compose freely. In the live repo, `E34a` is complete and effectively neutral, and `E34c` is complete with a small but below-threshold gain. That keeps the optimizer lane alive as a secondary option, but it makes `E24a` the better immediate diversification move.
+**Verdict:** E34 and E24 live on different axes — speed vs regularization. Compose freely. In the live repo, `E34a` is complete and effectively neutral, and `E34c` is complete with a small but below-threshold gain. That keeps the optimizer lane alive as a secondary option, but the first real full calibration showed the current proxy stack does not transfer cleanly, so the next move is full-run decomposition rather than another cheap diversification branch by default.
 
 ### Group C: Export Retention Regularizers (DIMINISHING RETURNS risk)
 | Exp | Target | How |
@@ -145,8 +145,9 @@ The suite is NOT a simple list to run sequentially. It's a **decision tree:**
 3. `E23` is also complete and killed on the current short-run proxy, so the live tranche now centers on schedule/logit experiments unless we intentionally switch to Track B and run `E24`
 4. The active base recipe now uses WSD plus asymmetric `(20,30)` plus the `E30` early-small-batch schedule. `E30` promoted under a matched eager fallback because fresh-host `torch.compile` is currently unstable on Vast, so later cheap P1 side branches should either use the same fallback or wait for the compile path to be repaired.
 5. `E24a` then answered the first Track B diversification question decisively in the negative: the very first nonzero decay point (`wd=0.1`) catastrophically regressed both prequant and post-roundtrip quality, so the sweep was stopped early and the branch is dead.
-6. That means the next disciplined move is the first real `8xH100` Runpod calibration on the current promoted stack, not another proxy branch by default.
-7. After that full calibration, the likely cheap follow-up set is `E36a/E36b` for eval-only softcap checks, or `E24b`, `E33`, or `E13` one at a time if we want to keep pushing Track B regularization.
+6. `CAL-01`, the first real `8xH100` Runpod calibration on the promoted stack, failed directionally. The stack was worse than the trusted baseline throughout training and was watchdog-killed before final export.
+7. That means the next disciplined move is full-run decomposition, not another proxy branch by default.
+8. After that, the likely cheap follow-up set is `E36a/E36b` for eval-only softcap checks, or `E24b`, `E33`, or `E13` one at a time if we want to keep pushing Track B regularization.
 8. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, but not the default next steps while cheaper optimizer and regularization branches are still open.
 9. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches.
 9. Full-run cadence is now explicit rather than vibe-based: keep `Vast` as the default `1xH100` proxy lane, use `Runpod` for planned `8xH100` full runs, and cash out another full recalibration whenever the active promoted proxy stack gains `0.010` post-roundtrip `val_bpb` versus the last stack that was measured on a real full run. A single `0.020` proxy leap can trigger an immediate retest.
@@ -181,4 +182,4 @@ E34a and E34b are alternatives for faster orthogonalization. E34c is a different
 Practical prioritization note:
 - `E34a` is complete and came back effectively neutral: `PolarExpress-5` was almost tied on quality, and `PolarExpress-4` traded a tiny quality loss for a tiny speed gain.
 - `E34c` is also now complete: NorMuon improved quality slightly, but only by about `-0.0012` post-roundtrip bpb, which is below the promote bar.
-- That means the optimizer lane is still alive, but after `E24a` failed the better immediate move is the first real `8xH100` calibration on the current promoted stack, not another Muon-internals pass by default.
+- That means the optimizer lane is still alive, but after `CAL-01` the better immediate move is full-run decomposition on Runpod, not another Muon-internals pass by default.

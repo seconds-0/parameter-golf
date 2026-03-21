@@ -31,6 +31,7 @@ Each post-mortem answers the same questions:
 | [E34a](./e34a_polar_express.md) | Neutral / no promote | Medium | `PolarExpress-5` was essentially tied and `PolarExpress-4` was slightly faster but slightly worse, so the branch did not clear the promote bar | Reopen only if a later optimizer lane result suggests the speed/quality trade should be composed or re-measured on the full stack |
 | [E34c](./e34c_normuon.md) | Neutral / no promote | Medium | NorMuon improved both prequant and post-roundtrip quality slightly, but only by about `-0.0012` bpb and with a small runtime cost, so it stayed below the promote bar | Reopen if a later stack amplifies optimizer-quality gains or if another Muon result suggests NorMuon composes better there |
 | [E35](./e35_cooldown_beta2.md) | Killed | High | On top of WSD, cooldown `β₂` made both prequant and post-roundtrip quality worse | Reopen only with a meaningfully different cooldown policy or schedule family |
+| [CAL-01](./cal01_full_run_calibration.md) | Failed calibration | High | The first real `8xH100` calibration stack underperformed the trusted baseline throughout training and was watchdog-killed before export, proving the current proxy stack is not yet a trusted full candidate | Reopen only after same-provider baseline control plus a full-run-safe watchdog policy |
 
 ## Process Checklist
 
@@ -55,3 +56,4 @@ The current archive covers every completed non-baseline experiment in the live t
 - `E34a`
 - `E34c`
 - `E35`
+- `CAL-01`
