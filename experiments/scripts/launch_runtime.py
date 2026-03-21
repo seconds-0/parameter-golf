@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -176,15 +177,65 @@ def _visible(manifest: dict[str, Any]) -> dict[str, Any]:
 def sync_repo(manifest: dict[str, Any]) -> None:
     host = manifest["host"]
     ssh(host, f"rm -rf {q(manifest['remote_root'])} && mkdir -p {q(manifest['remote_repo_dir'])}")
-    run_cmd(
-        [
-            "rsync", "-az",
-            "--exclude=.git", "--exclude=.codex-reviews", "--exclude=.venv", "--exclude=__pycache__",
-            "--exclude=data/datasets", "--exclude=data/tokenizers", "--exclude=experiments/results", "--exclude=logs",
-            f"{REPO_DIR}/",
-            f"{host}:{manifest['remote_repo_dir']}/",
-        ]
+    excludes = [
+        ".git",
+        ".codex-reviews",
+        ".venv",
+        "__pycache__",
+        "data/datasets",
+        "data/tokenizers",
+        "experiments/results",
+        "logs",
+    ]
+    if shutil.which("rsync"):
+        try:
+            run_cmd(
+                [
+                    "rsync", "-az",
+                    *(f"--exclude={item}" for item in excludes),
+                    f"{REPO_DIR}/",
+                    f"{host}:{manifest['remote_repo_dir']}/",
+                ]
+            )
+            return
+        except subprocess.CalledProcessError:
+            # Some remote images do not ship rsync even when it exists locally.
+            pass
+
+    # Fallback for environments without local rsync, or when remote rsync is missing.
+    tar_env = dict(os.environ)
+    tar_env.setdefault("COPYFILE_DISABLE", "1")
+    tar_cmd = [
+        "tar",
+        "--format",
+        "ustar",
+        *(f"--exclude={item}" for item in excludes),
+        "-czf",
+        "-",
+        ".",
+    ]
+    remote_extract = (
+        f"cd {q(manifest['remote_repo_dir'])} && "
+        "tar --no-same-owner --no-same-permissions -xzmf -"
     )
+    tar_proc = subprocess.Popen(
+        tar_cmd,
+        cwd=REPO_DIR,
+        env=tar_env,
+        stdout=subprocess.PIPE,
+    )
+    assert tar_proc.stdout is not None
+    ssh_proc = subprocess.Popen(
+        ["ssh", "-o", "ConnectTimeout=30", host, remote_extract],
+        stdin=tar_proc.stdout,
+    )
+    tar_proc.stdout.close()
+    ssh_return = ssh_proc.wait()
+    tar_return = tar_proc.wait()
+    if tar_return != 0:
+        raise subprocess.CalledProcessError(tar_return, tar_cmd)
+    if ssh_return != 0:
+        raise subprocess.CalledProcessError(ssh_return, ["ssh", "-o", "ConnectTimeout=30", host, remote_extract])
 
 
 def ensure_remote_data(manifest: dict[str, Any]) -> None:

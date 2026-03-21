@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
 import sys
@@ -119,12 +120,21 @@ def run_preflight_target(
         detail = toolchain_proc.stderr.strip() or toolchain_proc.stdout.strip() or "missing Python build headers or compiler"
         results.append(_fail("compile_toolchain", detail))
 
-    disk_proc = ssh_capture(host, remote_python_command(shared_dir, "-c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'"))
+    scratch_dir = resolved_env.get("TMPDIR", "/tmp")
+    scratch_dir_literal = json.dumps(scratch_dir)
+    disk_proc = ssh_capture(
+        host,
+        remote_python_command(
+            shared_dir,
+            f"-c 'from pathlib import Path; import shutil; path=Path({scratch_dir_literal}); "
+            "path.mkdir(parents=True, exist_ok=True); print(int(shutil.disk_usage(str(path)).free / (1024**3)))'",
+        ),
+    )
     free_gb = int(disk_proc.stdout.strip() or "0") if disk_proc.returncode == 0 else 0
     if disk_proc.returncode == 0 and free_gb > 10:
-        results.append(_ok("disk", f"{free_gb}GB free in /tmp"))
+        results.append(_ok("disk", f"{free_gb}GB free in {scratch_dir}"))
     else:
-        results.append(_fail("disk", f"only {free_gb}GB free in /tmp"))
+        results.append(_fail("disk", f"only {free_gb}GB free in {scratch_dir}"))
 
     data_proc = ssh_capture(host, f"test -d '{data_path}' && test -f '{tokenizer_path}'")
     if data_proc.returncode == 0:
@@ -134,10 +144,12 @@ def run_preflight_target(
 
     scratch_proc = ssh_capture(
         host,
-        "mkdir -p /tmp/pgolf_preflight_test && echo ok > /tmp/pgolf_preflight_test/check && rm -rf /tmp/pgolf_preflight_test",
+        f"mkdir -p {shlex.quote(scratch_dir)}/pgolf_preflight_test "
+        f"&& echo ok > {shlex.quote(scratch_dir)}/pgolf_preflight_test/check "
+        f"&& rm -rf {shlex.quote(scratch_dir)}/pgolf_preflight_test",
     )
     if scratch_proc.returncode == 0:
-        results.append(_ok("scratch", "scratch dir writable"))
+        results.append(_ok("scratch", f"scratch dir writable ({scratch_dir})"))
     else:
         results.append(_fail("scratch", scratch_proc.stderr.strip() or "scratch dir not writable"))
 

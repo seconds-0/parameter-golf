@@ -1663,6 +1663,129 @@ def test_verify_remote_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config_utils.remote_python_command("/shared", "-c 'import torch; import sentencepiece; import numpy'") in commands[0]
 
 
+def test_sync_repo_uses_rsync_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+    ssh_commands: list[str] = []
+
+    def fake_run_cmd(cmd: list[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def fake_ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        ssh_commands.append(command)
+        return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+
+    monkeypatch.setattr(launch_runtime, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
+    monkeypatch.setattr(launch_runtime.shutil, "which", lambda name: "/usr/bin/rsync" if name == "rsync" else None)
+
+    launch_runtime.sync_repo(
+        {
+            "host": "example",
+            "remote_root": "/tmp/pgolf_run",
+            "remote_repo_dir": "/tmp/pgolf_run/repo",
+        }
+    )
+
+    assert ssh_commands == ["rm -rf /tmp/pgolf_run && mkdir -p /tmp/pgolf_run/repo"]
+    assert commands and commands[0][0] == "rsync"
+    assert "--exclude=data/datasets" in commands[0]
+    assert commands[0][-1] == "example:/tmp/pgolf_run/repo/"
+
+
+def test_sync_repo_falls_back_to_tar_when_rsync_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    ssh_commands: list[str] = []
+    popen_calls: list[dict[str, object]] = []
+
+    class FakeStdout:
+        def close(self) -> None:
+            pass
+
+    class FakePopen:
+        def __init__(self, cmd: list[str], **kwargs: object) -> None:
+            self.cmd = cmd
+            self.kwargs = kwargs
+            self.stdout = FakeStdout() if cmd and cmd[0] == "tar" else None
+            popen_calls.append({"cmd": cmd, "kwargs": kwargs})
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        ssh_commands.append(command)
+        return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+
+    monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
+    monkeypatch.setattr(launch_runtime.shutil, "which", lambda name: None)
+    monkeypatch.setattr(launch_runtime.subprocess, "Popen", FakePopen)
+
+    launch_runtime.sync_repo(
+        {
+            "host": "example",
+            "remote_root": "/tmp/pgolf_run",
+            "remote_repo_dir": "/tmp/pgolf_run/repo",
+        }
+    )
+
+    assert ssh_commands == ["rm -rf /tmp/pgolf_run && mkdir -p /tmp/pgolf_run/repo"]
+    assert len(popen_calls) == 2
+    tar_call = popen_calls[0]
+    ssh_call = popen_calls[1]
+    assert tar_call["cmd"][0] == "tar"
+    assert "--format" in tar_call["cmd"]
+    assert "--exclude=data/tokenizers" in tar_call["cmd"]
+    assert tar_call["kwargs"]["cwd"] == launch_runtime.REPO_DIR
+    assert tar_call["kwargs"]["env"]["COPYFILE_DISABLE"] == "1"
+    assert ssh_call["cmd"][:3] == ["ssh", "-o", "ConnectTimeout=30"]
+    assert "tar --no-same-owner --no-same-permissions -xzmf -" in ssh_call["cmd"][-1]
+
+
+def test_sync_repo_falls_back_to_tar_when_rsync_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    ssh_commands: list[str] = []
+    popen_calls: list[dict[str, object]] = []
+    run_cmd_calls: list[list[str]] = []
+
+    class FakeStdout:
+        def close(self) -> None:
+            pass
+
+    class FakePopen:
+        def __init__(self, cmd: list[str], **kwargs: object) -> None:
+            self.cmd = cmd
+            self.kwargs = kwargs
+            self.stdout = FakeStdout() if cmd and cmd[0] == "tar" else None
+            popen_calls.append({"cmd": cmd, "kwargs": kwargs})
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_run_cmd(cmd: list[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        run_cmd_calls.append(cmd)
+        raise subprocess.CalledProcessError(127, cmd)
+
+    def fake_ssh(host: str, command: str, *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        ssh_commands.append(command)
+        return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
+
+    monkeypatch.setattr(launch_runtime, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(launch_runtime, "ssh", fake_ssh)
+    monkeypatch.setattr(launch_runtime.shutil, "which", lambda name: "/usr/bin/rsync" if name == "rsync" else None)
+    monkeypatch.setattr(launch_runtime.subprocess, "Popen", FakePopen)
+
+    launch_runtime.sync_repo(
+        {
+            "host": "example",
+            "remote_root": "/tmp/pgolf_run",
+            "remote_repo_dir": "/tmp/pgolf_run/repo",
+        }
+    )
+
+    assert run_cmd_calls and run_cmd_calls[0][0] == "rsync"
+    assert ssh_commands == ["rm -rf /tmp/pgolf_run && mkdir -p /tmp/pgolf_run/repo"]
+    assert len(popen_calls) == 2
+    assert popen_calls[0]["cmd"][0] == "tar"
+
+
 def test_start_remote_run_uses_unique_heredoc_and_verifies_startup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1821,7 +1944,12 @@ def test_preflight_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(preflight, "resolve_machine", lambda host: ("alpha", {"host": "root@example", "remote_dir": "/shared", "gpus": 8}, []))
     python_cmd = config_utils.remote_python_command("/shared", "-c 'import torch; print(torch.cuda.device_count())'")
     deps_cmd = config_utils.remote_python_command("/shared", "-c 'import sentencepiece, numpy; print(\"ok\")'")
-    disk_cmd = config_utils.remote_python_command("/shared", "-c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'")
+    scratch_dir = "/shared/pgolf-tmp"
+    disk_cmd = config_utils.remote_python_command(
+        "/shared",
+        f'-c \'from pathlib import Path; import shutil; path=Path("{scratch_dir}"); '
+        "path.mkdir(parents=True, exist_ok=True); print(int(shutil.disk_usage(str(path)).free / (1024**3)))'",
+    )
 
     def fake_ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
         mapping = {
@@ -1835,12 +1963,12 @@ def test_preflight_success(monkeypatch: pytest.MonkeyPatch) -> None:
             return subprocess.CompletedProcess(["ssh", host, command], 0, "ok\n", "")
         if command.startswith("test -d "):
             return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
-        if command.startswith("mkdir -p /tmp/pgolf_preflight_test"):
+        if command.startswith(f"mkdir -p {scratch_dir}/pgolf_preflight_test"):
             return subprocess.CompletedProcess(["ssh", host, command], 0, "", "")
         return subprocess.CompletedProcess(["ssh", host, command], 0, mapping[command], "")
 
     monkeypatch.setattr(preflight, "ssh_capture", fake_ssh)
-    payload = preflight.run_preflight_target("alpha", print_output=False)
+    payload = preflight.run_preflight_target("alpha", config_env={"TMPDIR": scratch_dir}, print_output=False)
     assert payload["ok"] is True
     assert all(result["ok"] for result in payload["results"])
 
@@ -1867,7 +1995,11 @@ def test_preflight_uses_config_selected_paths(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(preflight, "resolve_machine", lambda host: ("alpha", {"host": "root@example", "remote_dir": "/shared", "gpus": 8}, []))
     python_cmd = config_utils.remote_python_command("/shared", "-c 'import torch; print(torch.cuda.device_count())'")
     deps_cmd = config_utils.remote_python_command("/shared", "-c 'import sentencepiece, numpy; print(\"ok\")'")
-    disk_cmd = config_utils.remote_python_command("/shared", "-c 'import shutil; print(int(shutil.disk_usage(\"/tmp\").free / (1024**3)))'")
+    default_disk_cmd = config_utils.remote_python_command(
+        "/shared",
+        '-c \'from pathlib import Path; import shutil; path=Path("/tmp"); '
+        "path.mkdir(parents=True, exist_ok=True); print(int(shutil.disk_usage(str(path)).free / (1024**3)))'",
+    )
 
     def fake_ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
         mapping = {
@@ -1875,7 +2007,7 @@ def test_preflight_uses_config_selected_paths(tmp_path: Path, monkeypatch: pytes
             "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l": "8\n",
             python_cmd: "8\n",
             deps_cmd: "ok\n",
-            disk_cmd: "200\n",
+            default_disk_cmd: "200\n",
         }
         if "PGOLF_PYTHON_BIN" in command and preflight.COMPILE_TOOLCHAIN_CHECK in command:
             return subprocess.CompletedProcess(["ssh", host, command], 0, "ok\n", "")
