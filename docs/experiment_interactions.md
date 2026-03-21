@@ -88,7 +88,7 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 
 ## Composition Risk Matrix
 
-**Safe to compose (independent axes):**
+**Safe to compose (independent axes, after each item has already cleared its own test):**
 - E30 (batch schedule) + E32 (WSD)
 - E34 (Turbo-Muon) + any schedule change
 - E31 (MTP) + any architecture (zero export cost)
@@ -110,7 +110,7 @@ Each experiment touches a specific part of the training pipeline. Experiments wi
 
 ## Recommended Composition Layers (for the final model)
 
-Build the final candidate in layers, testing each before adding the next:
+Build the final candidate in layers, testing each before adding the next. For risky staged or throughput-changing ideas, that means testing them individually first and then re-testing them once layered into the live base:
 
 **Layer 1 — Foundation (independent wins, test in parallel at P1):**
 - E32 (WSD) or the current baseline schedule — pick winner
@@ -160,10 +160,14 @@ The suite is NOT a simple list to run sequentially. It's a **decision tree:**
    - `E32` alone
    - `E32 + E28`
    - then `E30`-focused ablations
-11. After that, the likely cheap follow-up set is `E36a/E36b` for eval-only softcap checks, or `E24b`, `E33`, or `E13` one at a time if we want to keep pushing Track B regularization.
-12. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, but not the default next steps while cheaper optimizer and regularization branches are still open.
-13. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches.
-14. Full-run cadence is now explicit rather than vibe-based: keep `Vast` as the default `1xH100` proxy lane, use `Runpod` for planned `8xH100` full runs, and cash out another full recalibration whenever the active promoted proxy stack gains `0.010` post-roundtrip `val_bpb` versus the last stack that was measured on a real full run. A single `0.020` proxy leap can trigger an immediate retest.
+11. That order is not arbitrary. It reflects the new rule for risky ideas: test the modification individually, then test it layered. For the current tranche that means:
+   - validate `E32` alone on full
+   - validate `E32 + E28` as the next layer
+   - only then reintroduce and vary `E30`
+12. After that, the likely cheap follow-up set is `E36a/E36b` for eval-only softcap checks, or `E24b`, `E33`, or `E13` one at a time if we want to keep pushing Track B regularization.
+13. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, but not the default next steps while cheaper optimizer and regularization branches are still open.
+14. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches.
+15. Full-run cadence is now explicit rather than vibe-based: keep `Vast` as the default `1xH100` proxy lane, use `Runpod` for planned `8xH100` full runs, and cash out another full recalibration whenever the active promoted proxy stack gains `0.010` post-roundtrip `val_bpb` versus the last stack that was measured on a real full run. A single `0.020` proxy leap can trigger an immediate retest.
 
 No experiments are truly "wasted" — even if E25 is superseded by E26, the E25 P1 result tells us whether SwiGLU activation quality is worth pursuing at all.
 

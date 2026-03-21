@@ -67,6 +67,27 @@ If phase-aware proxies still fail to predict full behavior after this decomposit
 
 In that world, we should simply do more Runpod full confirmations sooner.
 
+### 6. Risky ideas must pass standalone and layered checks
+
+For changes that can alter optimization dynamics rather than just a local computation, do not jump straight from "proxy win" to "composed base ingredient."
+
+This applies especially to:
+- staged schedules
+- batch-size or throughput changes
+- delayed regularizers
+- cooldown policies
+- ideas promoted under eager fallback but intended for compiled full runs
+
+For those classes, the minimum ladder is:
+- individual test: does the idea help on its own in the relevant regime?
+- layered test: does it still help on top of the active base?
+
+The point is to separate:
+- standalone effect
+- interaction effect
+
+`CAL-01` is the example that forces this rule. Even if `E30` phase 1 is genuinely useful, that still does not imply `E30 + E32` is healthy at full scale.
+
 ## Current best hypothesis after CAL-01
 
 - `E30` phase 1 is probably genuinely useful
@@ -82,6 +103,6 @@ The next tranche should follow this order:
 2. full-run-safe watchdog policy
 3. phase-aware `E30` proxy that crosses the transition
 4. compiled `1xH100` Runpod E30 check
-5. full decomposition (`E32`, then `E32 + E28`, then `E30` variants)
+5. full decomposition with standalone-then-layered structure (`E32`, then `E32 + E28`, then `E30` variants)
 
 If those phase-aware and compiled checks still do not calibrate the proxy lane, we should accept that this repo needs more real `8xH100` runs for promotion decisions than we originally hoped.

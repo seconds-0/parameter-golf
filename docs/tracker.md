@@ -121,7 +121,7 @@
 
 - Conservative plan: ~12-15 H100-hours total
 - Phase caps: P0 10%, P1 25%, P2 35%, P3 20%, P4 10% reserved
-- Current spend: ~$15.72
+- Current spend: ~$21.88
 
 ## Full-Run Calibration Policy
 
@@ -132,6 +132,7 @@
 - Trigger a new full-run recalibration whenever the active promoted proxy stack improves post-roundtrip `val_bpb` by at least `0.010` versus that live proxy reference.
 - Allow an immediate full-run retest after any single unusually strong proxy win of `0.020` `val_bpb` or better, even if the cumulative cadence threshold has not yet been reached.
 - After every full run, reset the proxy reference to the stack and proxy score used for that retest.
+- For risky staged or throughput-changing ideas, do not go straight from proxy win to composed base. Test the modification individually first, then test it layered on the active base.
 
 ## Ideas to Explore (not yet precise enough for a kill-rule experiment)
 
@@ -159,16 +160,21 @@
 - The sharpest reviewed diagnosis is therefore that `E30` is the leading suspect in two ways:
   - it was promoted under an eager fallback regime and then composed into a compiled full run
   - its batch transition lines up almost exactly with the full-run curve inflection near step `6200`, while WSD is still in the stable max-LR phase
+- `CAL-02`, the same-provider compiled Runpod baseline control `phase3_cal02_runpod_baseline_control-20260321-120456-1b219838`, then succeeded and validates the full-run lane itself. It landed at prequant `1.22760001` and postquant `1.23379495`, versus the trusted historical baseline `1.22628807`. The prequant delta (`+0.00131194`) is close enough to treat Runpod full training as reproduced, which makes the negative read on `CAL-01` much stronger.
+- `CAL-02` also sharpens the decomposition rule. For risky classes like staged schedules and throughput-changing ideas, we now require both:
+  - an individual confirmation
+  - a layered confirmation on the active base
 - `E34c` still matters as evidence: NorMuon improved both prequant and post-roundtrip quality slightly, so the optimizer lane is not dead. But after `CAL-01`, the next best use of budget is no longer another cheap proxy branch by default.
 - The next tranche should be a proxy-calibration repair plus full-run decomposition tranche on Runpod:
   - same-provider compiled baseline control
   - soften or disable the regression-tail watchdog for full calibrations so we always get final exact/export metrics
-  - add a phase-aware `E30` proxy that explicitly crosses the later schedule stage
-  - add a compiled `1xH100` Runpod `E30` datapoint to resolve the compile/eager confound
   - `E32` alone on full
   - then `E32 + E28` on full
+  - then a phase-aware `E30` proxy that explicitly crosses the later schedule stage
+  - then a compiled `1xH100` Runpod `E30` datapoint to resolve the compile/eager confound
   - then targeted `E30` ablations and transition-timing checks
 - The process lesson is now explicit: staged ideas cannot be promoted from short proxies that never enter the later phase. The new proxy policy is documented in [docs/postmortems/proxy_calibration_meta.md](./postmortems/proxy_calibration_meta.md).
+- The stronger process lesson is now also explicit: risky regime-changing ideas should be tested individually first and then re-tested in composition. `CAL-01` was the concrete failure mode that made this rule necessary.
 - `E36a/E36b` remain interesting zero-training side branches, but they should wait until we repair the proxy-to-full calibration loop.
 - `E16` KV-head rebudget and `E25` SwiGLU remain good medium-priority branches, but they are not the default next move after `E34a`. They are structurally more invasive and depend more on follow-on composition (`E17` for `E16`, param-budget tradeoffs for `E25`) than the cheaper optimizer/regularization branches above.
 - `E31a` MTP and `E18` layer sharing remain later, higher-variance branches. Right now the evidence says "more effective steps" is winning harder than "richer but heavier steps," so we should not front-load overhead-heavy ideas until the cheaper optimizer and regularization paths are exhausted or we have a fuller calibration run.

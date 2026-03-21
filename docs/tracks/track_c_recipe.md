@@ -25,16 +25,18 @@ In this small-vocab tied-embedding regime, the embedding matrix is unusually loa
 - Promote if Δpq ≤ -0.003 at P1
 - Kill if center point remains best (no improvement found)
 - Do NOT run the 15-config LR grid — it's explicitly the wrong approach per the PRD
+- For risky staged or throughput-changing recipe changes, promotion now requires two checks:
+  - individual validation in the relevant regime
+  - layered validation on top of the active base
 
 ## Status
-Partially unblocked. Tokenizer-dependent recipe work `E10`-`E12` still depends on `E09` (tokenizer winner selected), while the cheap side experiments `E30` and `E34` remain unblocked by `E02`. `E23`, `E24a`, and `E35` are complete and killed, `E34a` is complete and neutral / no promote, `E34c` is complete and mildly positive but below the promote bar, and `E32`, `E28`, and `E30` are now complete and promoted at proxy scale. The first real full calibration `CAL-01` then showed that the promoted proxy stack does not yet transfer cleanly to `8xH100`, so the active Track C base is now a **proxy-only** promoted stack rather than a trusted full candidate. The key refinement after review is that `CAL-01` was not simply weak from the beginning on an equal-tokens basis: the stack held up through phase 1 and then failed after entering the later stage of `E30`, which the original short proxy had never really validated. Detailed closeout reviews: [E23](../postmortems/e23_ema_export.md), [E24a](../postmortems/e24a_fixed_weight_decay.md), [E28](../postmortems/e28_asymmetric_logit_rescale.md), [E30](../postmortems/e30_batch_schedule.md), [E32](../postmortems/e32_wsd_schedule.md), [E34a](../postmortems/e34a_polar_express.md), [E34c](../postmortems/e34c_normuon.md), [E35](../postmortems/e35_cooldown_beta2.md), [CAL-01](../postmortems/cal01_full_run_calibration.md), [Proxy Calibration Meta](../postmortems/proxy_calibration_meta.md).
+Partially unblocked. Tokenizer-dependent recipe work `E10`-`E12` still depends on `E09` (tokenizer winner selected), while the cheap side experiments `E30` and `E34` remain unblocked by `E02`. `E23`, `E24a`, and `E35` are complete and killed, `E34a` is complete and neutral / no promote, `E34c` is complete and mildly positive but below the promote bar, and `E32`, `E28`, and `E30` are now complete and promoted at proxy scale. The first real full calibration `CAL-01` then showed that the promoted proxy stack does not yet transfer cleanly to `8xH100`, so the active Track C base is now a **proxy-only** promoted stack rather than a trusted full candidate. `CAL-02`, the same-provider compiled Runpod baseline control, then succeeded and reproduced the historical baseline closely enough on prequant to validate the full-run lane itself: prequant `1.22760001` versus trusted historical `1.22628807` (`+0.00131194`). The key refinement after review is that `CAL-01` was not simply weak from the beginning on an equal-tokens basis: the stack held up through phase 1 and then failed after entering the later stage of `E30`, which the original short proxy had never really validated. Detailed closeout reviews: [E23](../postmortems/e23_ema_export.md), [E24a](../postmortems/e24a_fixed_weight_decay.md), [E28](../postmortems/e28_asymmetric_logit_rescale.md), [E30](../postmortems/e30_batch_schedule.md), [E32](../postmortems/e32_wsd_schedule.md), [E34a](../postmortems/e34a_polar_express.md), [E34c](../postmortems/e34c_normuon.md), [E35](../postmortems/e35_cooldown_beta2.md), [CAL-01](../postmortems/cal01_full_run_calibration.md), [Proxy Calibration Meta](../postmortems/proxy_calibration_meta.md).
 
 The recommended next Track C order is:
-- same-provider full baseline control on Runpod under the compiled regime
-- a full-run-safe watchdog mode so calibration runs always reach final exact/export eval
-- a phase-aware `E30` proxy that explicitly crosses the later schedule stage
-- a compiled `1xH100` Runpod datapoint for `E30`
-- `E32` alone on full, then `E32 + E28` on full
+- `E32` alone on full
+- then `E32 + E28` on full
+- then a phase-aware `E30` proxy that explicitly crosses the later schedule stage
+- then a compiled `1xH100` Runpod datapoint for `E30`
 - then `E30`-focused decomposition, especially the batch-transition timing under WSD
 - `E36a/E36b` if we want the cheapest eval-only follow-up after that calibration
 - `E24b`, `E33`, or `E13` if we want to keep pushing Track B training-aware regularization one branch at a time
@@ -65,6 +67,8 @@ Current prioritization thesis:
 - The caveat is now first-class, not minor: the paired bundle ran under `TORCHDYNAMO_DISABLE=1` because fresh-host compiled warmup was crashing on Vast, but the failed full calibration ran in the compiled regime on Runpod
 - `CAL-01` therefore makes `E30` the leading suspect in a more specific way than "big proxy win failed to transfer." On an equal-tokens basis the stack was competitive through roughly `900M` tokens, then failed after entering the later large-batch stage that the original short proxy had not really validated
 - The candidate curve peaked at about step `6200`, almost exactly where the `E30` batch schedule transitions from `131072` to `524288` tokens, while WSD is still in its stable max-LR phase. That interaction is now the most plausible late-run failure mode and needs explicit phase-aware proxy coverage plus full-run decomposition
+- `CAL-02` then answered the provider/harness question cleanly: the same-provider compiled Runpod baseline control finished successfully at prequant `1.22760001` and postquant `1.23379495`. That means the full-run lane itself is credible, and the remaining uncertainty is about experiment transfer and composition rather than basic Runpod reproducibility
+- The new promotion rule for risky recipe changes is now explicit: test them individually, then test them layered. For the current tranche, that means `E32` alone, then `E32 + E28`, and only then bringing `E30` back into the full stack
 - `E34a` came back neutral but informative: control `phase1_e34a_control_p1-20260320-222847-48fb49f2` landed at postquant `1.40742446`, `PolarExpress-5` landed at `1.40728640`, and `PolarExpress-4` landed at `1.40755582`
 - That is far too small to promote on quality, but it does keep the optimizer lane alive: the 5-step polynomial stayed essentially tied, and the 4-step variant bought a small speed edge (`235.3 ms` → `232.2 ms`) at a very small quality cost
 - `E34c` then answered the next optimizer-quality question on the promoted WSD + asymmetric `(20,30)` + `E30` base: control `phase1_e34c_control_p1-20260321-004949-c4a83875` landed at postquant `1.41100907`, while the NorMuon candidate `phase1_e34c_normuon_p1-20260321-010303-d12f0bd7` improved slightly to `1.40981103`

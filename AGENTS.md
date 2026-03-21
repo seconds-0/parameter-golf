@@ -11,6 +11,7 @@ Core training entry points live at the repository root: `train_gpt.py` for CUDA 
 - Read `docs/tracks/track_{a-f}_*.md` for per-track thesis, experiments, decision rules, and learnings.
 - When a run is genuinely ready for packaging, use `docs/submission_checklist.md` for the repo-local submission and leaderboard checklist.
 - The live tracker also carries the current proxy-to-full-run retest threshold and the provider split (`Vast` for proxy work, `Runpod` for planned 8xH100 full runs).
+- The live docs also carry the current proxy-calibration rule: risky staged or throughput-changing ideas must be tested individually first and then re-tested in composition; see `docs/postmortems/proxy_calibration_meta.md`.
 
 Key principles that govern all experiment work:
 - **Post-roundtrip is the only real metric.** Never promote on pre-quant improvement alone. Track `Δpq` (post-roundtrip delta vs baseline, negative=better) and `qgap` (post-quant minus pre-quant bpb, smaller=better).
