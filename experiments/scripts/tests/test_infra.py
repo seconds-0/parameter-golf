@@ -71,6 +71,9 @@ CALIBRATION_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_calibration
 CAL02_BASELINE_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal02_runpod_baseline_control.yaml"
 CAL03_E32_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal03_e32_full.yaml"
 CAL04_E32_E28_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal04_e32_e28_full.yaml"
+CAL05A_E32_E28_E30_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal05a_e32_e28_e30_full.yaml"
+CAL05B_E32_E28_E30_DECAY_ALIGNED_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal05b_e32_e28_e30_decay_aligned_full.yaml"
+CAL05C_E32_E28_E30_LATE_TRANSITION_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal05c_e32_e28_e30_late_transition_full.yaml"
 CAL06_E30_COMPILED_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_cal06_e30_compiled_control_p1.yaml"
 CAL06_E30_COMPILED_BATCH_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_cal06_e30_compiled_batch_schedule_p1.yaml"
 CAL07_E30_PHASEAWARE_CONTROL_P2_CONFIG = ROOT / "experiments" / "configs" / "phase2_cal07_e30_phaseaware_control_p2.yaml"
@@ -397,6 +400,9 @@ def test_validate_cal03_e32_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-03"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
+    assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
+    assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
     assert run.env["LR_SCHEDULE"] == "wsd"
     assert "LOGIT_SOFTCAP_POS" not in run.env
 
@@ -407,9 +413,54 @@ def test_validate_cal04_e32_e28_full_config() -> None:
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-04"
     assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
+    assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
+    assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
     assert run.env["LOGIT_SOFTCAP_POS"] == "20"
     assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
     assert "BATCH_SCHEDULE" not in run.env
+
+
+def test_validate_cal05a_e32_e28_e30_full_config() -> None:
+    result = config_utils.validate_config(CAL05A_E32_E28_E30_FULL_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-05a"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
+    assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
+    assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert run.env["BATCH_SCHEDULE"] == "0.3:131072,1.0:524288"
+
+
+def test_validate_cal05b_e32_e28_e30_decay_aligned_full_config() -> None:
+    result = config_utils.validate_config(CAL05B_E32_E28_E30_DECAY_ALIGNED_FULL_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-05b"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
+    assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
+    assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert run.env["BATCH_SCHEDULE"] == "0.75:131072,1.0:524288"
+
+
+def test_validate_cal05c_e32_e28_e30_late_transition_full_config() -> None:
+    result = config_utils.validate_config(CAL05C_E32_E28_E30_LATE_TRANSITION_FULL_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-05c"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
+    assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
+    assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert run.env["BATCH_SCHEDULE"] == "0.5:131072,1.0:524288"
 
 
 def test_validate_cal06_e30_compiled_control_config() -> None:
@@ -417,6 +468,9 @@ def test_validate_cal06_e30_compiled_control_config() -> None:
     assert result.ok
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-06-control"
+    assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
+    assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
+    assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
     assert "TORCHDYNAMO_DISABLE" not in run.env
     assert "BATCH_SCHEDULE" not in run.env
 
@@ -426,6 +480,9 @@ def test_validate_cal06_e30_compiled_batch_config() -> None:
     assert result.ok
     run = result.runs[0]
     assert run.metadata["hypothesis_id"] == "CAL-06"
+    assert run.env["DATA_PATH"] == "/runpod/parameter-golf-data/datasets/fineweb10B_sp1024"
+    assert run.env["TOKENIZER_PATH"] == "/runpod/parameter-golf-data/tokenizers/fineweb_1024_bpe.model"
+    assert run.env["TMPDIR"] == "/runpod/pgolf-tmp"
     assert "TORCHDYNAMO_DISABLE" not in run.env
     assert run.env["BATCH_SCHEDULE"] == "0.3:131072,1.0:524288"
 
