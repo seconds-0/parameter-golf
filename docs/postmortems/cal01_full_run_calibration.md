@@ -6,11 +6,12 @@ Directional failure, but not a clean final-score comparison. The promoted proxy 
 
 The most important refinement after review is that this was not just “some composed stack failed.” The likely failure surface is narrower:
 
-- `E30` was promoted under a matched eager fallback, not the compiled regime used by the full run
+- `E30` was promoted from a short proxy that effectively validated only phase 1 of the schedule
+- `E30` was also promoted under a matched eager fallback, not the compiled regime used by the full run
 - `E30`’s batch transition happens almost exactly where the full-run curve peaks and then starts regressing
 - under WSD, that transition occurs while LR is still in the stable max-LR phase
 
-So the current best diagnosis is: **real negative transfer, with `E30` and the compile/eager plus batch-schedule/WSD interaction as the leading suspects**.
+So the current best diagnosis is: **real negative transfer, with `E30` phase 2 and its interaction with WSD as the leading suspect, plus a real compile/eager measurement confound**.
 
 ## Question tested
 
@@ -71,7 +72,7 @@ This was **not** a same-provider matched baseline control. The trusted baseline 
 
 Those four points triggered the current watchdog regression rule.
 
-Against the trusted baseline, the calibration stack was worse at matched training stages throughout the run:
+Against the trusted baseline, the calibration stack looked worse at matched step counts and wallclock throughout the run:
 
 - around step `200`: candidate `1.8224` vs baseline `1.6907` (`+0.1317`)
 - around step `2000`: candidate `1.4182` vs baseline `1.3242` (`+0.0940`)
@@ -81,13 +82,23 @@ Against the trusted baseline, the calibration stack was worse at matched trainin
 - around step `12000`: candidate `1.3718` vs baseline `1.2442` (`+0.1276`)
 - around step `14000`: candidate `1.3737` vs baseline `1.2192` (`+0.1545`)
 
+That step-matched framing is incomplete, though, because `E30` intentionally changes batch size and therefore changes step density. On an equal-tokens basis, the candidate was much healthier early:
+
+- around `200M` tokens: candidate `1.4372` vs baseline `1.5199` (`-0.0827`)
+- around `500M` tokens: candidate `1.3793` vs baseline `1.3830` (`-0.0037`)
+- around `900M` tokens: candidate `1.3372` vs baseline `1.3327` (`+0.0045`)
+- around `1.0B` tokens: candidate `1.3384` vs baseline `1.3242` (`+0.0142`)
+- around `2.0B` tokens: candidate `1.3540` vs baseline `1.2881` (`+0.0659`)
+
+That token-matched view is the key process lesson: the stack was not simply bad from the beginning. It was competitive through phase 1, then clearly failed later.
+
 There is also a notable inflection in the candidate curve:
 
 - best live `val_bpb` occurs at step `6200`
 - the `E30` batch schedule transitions at step `6000` (`30%` of `20000`)
 - WSD does not begin decaying LR until step `15200` (`75%` of `20000`)
 
-So the candidate appears to hit the large-batch transition while still at max LR, then flatten and regress.
+So the candidate appears to hit the large-batch transition while still at max LR, then flatten and regress. That makes the most likely root cause a **schedule-throughput-tokens mismatch**, not just “full runs dislike the whole stack.”
 
 ## Why we believe it
 
@@ -124,20 +135,26 @@ There are two additional non-bug confounds that matter:
 - **Compile/eager mismatch:** `E30` was promoted in an eager fallback regime on Vast because fresh-host `torch.compile` was crashing there, but `CAL-01` ran in the normal compiled regime on Runpod. That is not a cosmetic difference; it changes the measurement regime for the strongest proxy win in the stack.
 - **Same-provider baseline missing:** we still do not have a same-provider compiled Runpod baseline control, so `CAL-01` is a strong negative transfer signal, but not yet a perfect apples-to-apples causal decomposition.
 
+There is also a process gap that is now explicit:
+
+- **Phase coverage gap:** the winning `E30` proxy never exercised the later large-batch stage in a representative way. So the proxy promoted phase 1 of a staged schedule without really validating phase 2.
+
 ## What we learned
 
 - The current promoted proxy stack is **not** a trustworthy full candidate as-is.
-- The failure is not just late-run wobble. The stack underperformed the trusted baseline from early training onward.
-- That means our current proxy-to-full mapping is over-optimistic.
+- The failure is not best summarized as "worse from the start." On an equal-tokens basis, the candidate was competitive through roughly `900M` tokens and only clearly failed later.
+- That means our current proxy-to-full mapping is over-optimistic in a specific way: it allowed a staged schedule to promote without validating the later stage.
 - `E30` is the leading suspect because:
   - it contributed the biggest proxy gain by far
   - it was promoted under a matched eager fallback rather than the compiled full-run regime
+  - the original short proxy effectively validated only phase 1
   - its batch transition lines up almost exactly with the candidate curve’s inflection point
   - under WSD, that transition happens while LR is still at the stable maximum rather than in decay
-- The likely mechanism is not merely “bigger batch is bad.” It is more specifically that `E30` may interact badly with WSD at full scale because the effective update magnitude jumps sharply at the batch transition before LR has started to decay.
-- The early gap still matters. The candidate was already behind the baseline by step `200`, so the step-6000 interaction is likely the biggest late failure mode, but not the whole story.
+- The likely mechanism is not merely “bigger batch is bad.” It is more specifically that `E30` phase 2 may interact badly with WSD at full scale because throughput and effective update scale jump sharply at the transition before LR has started to decay.
+- The compile/eager mismatch still matters, but it is now better framed as a real confound layered on top of a likely phase-coverage failure.
 - `E32` and `E28` may still be useful, but the combined stack no longer deserves unconditional trust at full scale.
 - Full-run monitoring needs a separate policy from proxy monitoring.
+- Staged schedules now require phase-aware proxies before promotion. The process lesson is documented separately in [proxy_calibration_meta.md](./proxy_calibration_meta.md).
 
 ## Reopen conditions
 
@@ -154,12 +171,14 @@ The next disciplined tranche should be:
 
 1. run a same-provider full baseline control on Runpod under the compiled regime
 2. soften or disable the regression-tail watchdog for full calibration runs so we always get final exact/export metrics
-3. run `E32` alone on full as the highest-confidence individual positive
-4. if `E32` is healthy, run `E32 + E28` on full
-5. then isolate `E30` specifically:
-   - `E30` alone on full under the baseline schedule, or
-   - `E32 + E28 + E30` with a moved batch transition, or
-   - `E32 + E28 + E30` with the transition aligned to the WSD decay boundary
-6. resolve the compile/eager confound at small scale by getting a compiled `1xH100` datapoint for `E30` on Runpod
+3. add a phase-aware `E30` proxy that explicitly crosses the later batch-schedule stage
+4. resolve the compile/eager confound at small scale by getting a compiled `1xH100` datapoint for `E30` on Runpod
+5. run `E32` alone on full as the highest-confidence individual positive
+6. if `E32` is healthy, run `E32 + E28` on full
+7. then isolate `E30` specifically:
+   - original `E30` transition as the decomposition control
+   - a later batch transition
+   - an `E30` transition aligned to the WSD decay boundary
+   - optionally a shorter WSD stable phase or token-linked schedule if the interaction is confirmed
 
 `E36a/E36b` should not become the default next move. The right next work is to repair our proxy-to-full calibration and isolate which promoted component broke transfer.

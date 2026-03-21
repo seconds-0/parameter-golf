@@ -1,0 +1,12 @@
+extends: baseline.yaml
+name: phase3_cal02_runpod_baseline_control
+description: "Same-provider Runpod 8xH100 baseline control after CAL-01"
+hypothesis_id: "CAL-02"
+group: "full-control"
+notes: "Same-provider compiled Runpod baseline control used to validate the full-run lane after CAL-01. Uses calibration watchdog policy so the run always reaches final exact/export eval."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "600"
+  TRAIN_LOG_EVERY: "50"
+  VAL_LOSS_EVERY: "200"
+  WATCHDOG_POLICY: "calibration"

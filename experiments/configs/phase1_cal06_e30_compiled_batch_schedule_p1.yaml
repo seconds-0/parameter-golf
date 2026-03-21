@@ -1,0 +1,19 @@
+extends: baseline.yaml
+name: phase1_cal06_e30_compiled_batch_schedule_p1
+description: "Runpod compiled 1xH100 E30 candidate confirmation"
+hypothesis_id: "CAL-06"
+group: "compiled-check"
+notes: "Compiled Runpod 1xH100 confirmation for E30 on the promoted WSD + asymmetric (20,30) base. Mirrors the original idea but removes the eager-fallback confound."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  LOGIT_SOFTCAP_POS: "20"
+  LOGIT_SOFTCAP_NEG: "30"
+  BATCH_SCHEDULE: "0.3:131072,1.0:524288"

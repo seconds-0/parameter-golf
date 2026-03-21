@@ -1,0 +1,17 @@
+extends: baseline.yaml
+name: phase3_cal03_e32_full
+description: "Full 8xH100 decomposition rung with WSD alone"
+hypothesis_id: "CAL-03"
+group: "full-decomposition"
+notes: "First full decomposition rung after CAL-01: WSD alone on the baseline model under the Runpod compiled regime. Uses calibration watchdog policy."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "600"
+  TRAIN_LOG_EVERY: "50"
+  VAL_LOSS_EVERY: "200"
+  WATCHDOG_POLICY: "calibration"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"

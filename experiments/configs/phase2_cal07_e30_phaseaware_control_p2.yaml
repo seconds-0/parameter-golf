@@ -1,0 +1,21 @@
+extends: baseline.yaml
+name: phase2_cal07_e30_phaseaware_control_p2
+description: "Phase-aware E30 control that crosses the later schedule boundary"
+hypothesis_id: "CAL-07-control"
+group: "phase-aware-proxy"
+notes: "Matched eager-fallback control for phase-aware E30 validation. Compresses the iteration horizon so the proxy spans the intended two-stage schedule and collects post-transition validations."
+env:
+  SEED: "1337"
+  ITERATIONS: "3000"
+  MAX_WALLCLOCK_SECONDS: "420"
+  TRAIN_LOG_EVERY: "25"
+  VAL_LOSS_EVERY: "100"
+  WATCHDOG_POLICY: "calibration"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  LOGIT_SOFTCAP_POS: "20"
+  LOGIT_SOFTCAP_NEG: "30"
+  TORCHDYNAMO_DISABLE: "1"

@@ -1,0 +1,22 @@
+extends: baseline.yaml
+name: phase2_cal07_e30_phaseaware_batch_schedule_p2
+description: "Phase-aware E30 candidate that crosses the later schedule boundary"
+hypothesis_id: "CAL-07"
+group: "phase-aware-proxy"
+notes: "Phase-aware E30 proxy in the matched eager-fallback regime. Compresses the horizon so the proxy always enters batch-schedule phase 2 and records multiple post-transition validations."
+env:
+  SEED: "1337"
+  ITERATIONS: "3000"
+  MAX_WALLCLOCK_SECONDS: "420"
+  TRAIN_LOG_EVERY: "25"
+  VAL_LOSS_EVERY: "100"
+  WATCHDOG_POLICY: "calibration"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  LOGIT_SOFTCAP_POS: "20"
+  LOGIT_SOFTCAP_NEG: "30"
+  BATCH_SCHEDULE: "0.3:131072,1.0:524288"
+  TORCHDYNAMO_DISABLE: "1"

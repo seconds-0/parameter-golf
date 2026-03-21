@@ -145,20 +145,25 @@ The suite is NOT a simple list to run sequentially. It's a **decision tree:**
 3. `E23` is also complete and killed on the current short-run proxy, so the live tranche now centers on schedule/logit experiments unless we intentionally switch to Track B and run `E24`
 4. The active base recipe now uses WSD plus asymmetric `(20,30)` plus the `E30` early-small-batch schedule. `E30` promoted under a matched eager fallback because fresh-host `torch.compile` is currently unstable on Vast, so later cheap P1 side branches should either use the same fallback or wait for the compile path to be repaired.
 5. `E24a` then answered the first Track B diversification question decisively in the negative: the very first nonzero decay point (`wd=0.1`) catastrophically regressed both prequant and post-roundtrip quality, so the sweep was stopped early and the branch is dead.
-6. `CAL-01`, the first real `8xH100` Runpod calibration on the promoted stack, failed directionally. The stack was worse than the trusted baseline throughout training and was watchdog-killed before final export.
-7. The most important new diagnosis is that `E30` is now the leading suspect. It was promoted under an eager fallback regime, then composed into a compiled full run, and its batch transition lands almost exactly where the full-run curve peaks and starts regressing.
-8. That means the next disciplined move is full-run decomposition, not another proxy branch by default.
-9. The decomposition order should be:
+6. `CAL-01`, the first real `8xH100` Runpod calibration on the promoted stack, failed directionally and was watchdog-killed before final export.
+7. The strongest new diagnosis is more specific than "the stack was always bad." On an equal-tokens basis, the candidate was competitive through roughly `900M` tokens, then failed after entering the later large-batch stage that the original short `E30` proxy never really validated.
+8. That makes `E30` the leading suspect in a sharper way:
+   - phase 1 may genuinely be good
+   - phase 2 under current WSD timing is likely bad
+   - compile versus eager remains a real confound, but not the only plausible root cause
+9. That means the next disciplined move is proxy-calibration repair plus full-run decomposition, not another new proxy branch by default.
+10. The decomposition order should be:
    - same-provider compiled baseline control
    - full-run-safe watchdog policy
+   - phase-aware `E30` proxy that crosses the transition
+   - compiled `1xH100` Runpod datapoint for `E30`
    - `E32` alone
    - `E32 + E28`
    - then `E30`-focused ablations
-   - plus a compiled `1xH100` Runpod datapoint for `E30`
-10. After that, the likely cheap follow-up set is `E36a/E36b` for eval-only softcap checks, or `E24b`, `E33`, or `E13` one at a time if we want to keep pushing Track B regularization.
-11. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, but not the default next steps while cheaper optimizer and regularization branches are still open.
-12. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches.
-13. Full-run cadence is now explicit rather than vibe-based: keep `Vast` as the default `1xH100` proxy lane, use `Runpod` for planned `8xH100` full runs, and cash out another full recalibration whenever the active promoted proxy stack gains `0.010` post-roundtrip `val_bpb` versus the last stack that was measured on a real full run. A single `0.020` proxy leap can trigger an immediate retest.
+11. After that, the likely cheap follow-up set is `E36a/E36b` for eval-only softcap checks, or `E24b`, `E33`, or `E13` one at a time if we want to keep pushing Track B regularization.
+12. Tokenizer-dependent recipe work (`E10`-`E12`) waits for `X-06`, `E05`, and `E09`; architecture experiments (`E16`, `E18`, `E25`) remain independent side branches, but not the default next steps while cheaper optimizer and regularization branches are still open.
+13. Composition happens in Phase 5 (`E19`/`E20`), building on the winners from the independent tranche plus the best surviving Track B / Track A / architecture branches.
+14. Full-run cadence is now explicit rather than vibe-based: keep `Vast` as the default `1xH100` proxy lane, use `Runpod` for planned `8xH100` full runs, and cash out another full recalibration whenever the active promoted proxy stack gains `0.010` post-roundtrip `val_bpb` versus the last stack that was measured on a real full run. A single `0.020` proxy leap can trigger an immediate retest.
 
 No experiments are truly "wasted" — even if E25 is superseded by E26, the E25 P1 result tells us whether SwiGLU activation quality is worth pursuing at all.
 

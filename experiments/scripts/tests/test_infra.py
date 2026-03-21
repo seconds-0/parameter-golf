@@ -68,6 +68,13 @@ E34C_NORMUON_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34c_normuon
 E24A_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e24a_control_p1.yaml"
 E24A_WD01_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e24a_wd01_p1.yaml"
 CALIBRATION_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_calibration_wsd_e28_e30.yaml"
+CAL02_BASELINE_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal02_runpod_baseline_control.yaml"
+CAL03_E32_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal03_e32_full.yaml"
+CAL04_E32_E28_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_cal04_e32_e28_full.yaml"
+CAL06_E30_COMPILED_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_cal06_e30_compiled_control_p1.yaml"
+CAL06_E30_COMPILED_BATCH_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_cal06_e30_compiled_batch_schedule_p1.yaml"
+CAL07_E30_PHASEAWARE_CONTROL_P2_CONFIG = ROOT / "experiments" / "configs" / "phase2_cal07_e30_phaseaware_control_p2.yaml"
+CAL07_E30_PHASEAWARE_BATCH_P2_CONFIG = ROOT / "experiments" / "configs" / "phase2_cal07_e30_phaseaware_batch_schedule_p2.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
 BASELINE_LOG = ROOT / "records" / "track_10min_16mb" / "2026-03-17_NaiveBaseline" / "train.log"
 
@@ -373,6 +380,78 @@ def test_validate_full_calibration_config() -> None:
     assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
     assert run.env["BATCH_SCHEDULE"] == "0.3:131072,1.0:524288"
     assert run.env["MAX_WALLCLOCK_SECONDS"] == "600"
+
+
+def test_validate_cal02_baseline_full_config() -> None:
+    result = config_utils.validate_config(CAL02_BASELINE_FULL_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-02"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert "LR_SCHEDULE" not in run.env
+
+
+def test_validate_cal03_e32_full_config() -> None:
+    result = config_utils.validate_config(CAL03_E32_FULL_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-03"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert "LOGIT_SOFTCAP_POS" not in run.env
+
+
+def test_validate_cal04_e32_e28_full_config() -> None:
+    result = config_utils.validate_config(CAL04_E32_E28_FULL_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-04"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert "BATCH_SCHEDULE" not in run.env
+
+
+def test_validate_cal06_e30_compiled_control_config() -> None:
+    result = config_utils.validate_config(CAL06_E30_COMPILED_CONTROL_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-06-control"
+    assert "TORCHDYNAMO_DISABLE" not in run.env
+    assert "BATCH_SCHEDULE" not in run.env
+
+
+def test_validate_cal06_e30_compiled_batch_config() -> None:
+    result = config_utils.validate_config(CAL06_E30_COMPILED_BATCH_P1_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-06"
+    assert "TORCHDYNAMO_DISABLE" not in run.env
+    assert run.env["BATCH_SCHEDULE"] == "0.3:131072,1.0:524288"
+
+
+def test_validate_cal07_e30_phaseaware_control_config() -> None:
+    result = config_utils.validate_config(CAL07_E30_PHASEAWARE_CONTROL_P2_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-07-control"
+    assert run.env["ITERATIONS"] == "3000"
+    assert run.env["VAL_LOSS_EVERY"] == "100"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["TORCHDYNAMO_DISABLE"] == "1"
+    assert "BATCH_SCHEDULE" not in run.env
+
+
+def test_validate_cal07_e30_phaseaware_batch_config() -> None:
+    result = config_utils.validate_config(CAL07_E30_PHASEAWARE_BATCH_P2_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.metadata["hypothesis_id"] == "CAL-07"
+    assert run.env["ITERATIONS"] == "3000"
+    assert run.env["VAL_LOSS_EVERY"] == "100"
+    assert run.env["WATCHDOG_POLICY"] == "calibration"
+    assert run.env["TORCHDYNAMO_DISABLE"] == "1"
+    assert run.env["BATCH_SCHEDULE"] == "0.3:131072,1.0:524288"
 
 
 def test_export_eval_parses_env_overrides() -> None:
@@ -1661,6 +1740,25 @@ def test_watchdog_detects_stall_and_regression() -> None:
     assert regressing["failure_reason"] == "regressing_val_bpb"
 
 
+def test_watchdog_calibration_policy_skips_val_regression_kill() -> None:
+    now_epoch = time.time()
+    outcome = watchdog.evaluate_snapshot(
+        {
+            "lines": [
+                "step:50/200 val_loss:2.0 val_bpb:1.10 train_time:100ms step_avg:100ms",
+                "step:100/200 val_loss:2.0 val_bpb:1.11 train_time:100ms step_avg:100ms",
+                "step:150/200 val_loss:2.0 val_bpb:1.12 train_time:100ms step_avg:100ms",
+                "step:200/200 val_loss:2.0 val_bpb:1.13 train_time:100ms step_avg:100ms",
+            ],
+            "mtime_epoch": now_epoch,
+        },
+        now_epoch=now_epoch,
+        watchdog_policy="calibration",
+    )
+    assert outcome["triggered"] is False
+    assert outcome["watchdog_policy"] == "calibration"
+
+
 def test_watchdog_respects_train_log_cadence() -> None:
     now_epoch = time.time()
     outcome = watchdog.evaluate_snapshot(
@@ -1685,6 +1783,38 @@ def test_watchdog_check_kills_run(monkeypatch: pytest.MonkeyPatch) -> None:
     assert outcome["triggered"] is True
     assert terminated == ["cuda_oom"]
     assert saved[-1]["failure_reason"] == "cuda_oom"
+
+
+def test_watchdog_check_records_calibration_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        watchdog,
+        "remote_log_snapshot",
+        lambda manifest, lines=20: {
+            "lines": [
+                "step:50/200 val_loss:2.0 val_bpb:1.10 train_time:100ms step_avg:100ms",
+                "step:100/200 val_loss:2.0 val_bpb:1.11 train_time:100ms step_avg:100ms",
+                "step:150/200 val_loss:2.0 val_bpb:1.12 train_time:100ms step_avg:100ms",
+                "step:200/200 val_loss:2.0 val_bpb:1.13 train_time:100ms step_avg:100ms",
+            ],
+            "mtime_epoch": time.time(),
+            "last_line": "step:200/200 val_loss:2.0 val_bpb:1.13 train_time:100ms step_avg:100ms",
+        },
+    )
+    monkeypatch.setattr(watchdog, "save_manifest", lambda manifest: saved.append(dict(manifest)))
+    monkeypatch.setattr(
+        watchdog,
+        "terminate_remote_run",
+        lambda manifest, failure_reason=None: (_ for _ in ()).throw(AssertionError("calibration mode should not terminate")),
+    )
+    manifest = {
+        "run_id": "watch-2",
+        "status": "running",
+        "resolved_env": {"WATCHDOG_POLICY": "calibration", "TRAIN_LOG_EVERY": "25"},
+    }
+    outcome = watchdog.check_watchdog(manifest)
+    assert outcome["triggered"] is False
+    assert saved[-1]["watchdog_policy"] == "calibration"
 
 
 def test_preflight_success(monkeypatch: pytest.MonkeyPatch) -> None:

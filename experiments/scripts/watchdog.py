@@ -39,11 +39,21 @@ def _stall_timeout_seconds(step_avg_seconds: float, train_log_every: int) -> flo
     return max(60.0, expected_log_gap * 3.0)
 
 
+def _watchdog_policy(policy: str | None) -> str:
+    text = str(policy or "default").strip().lower()
+    if text in {"", "default", "standard"}:
+        return "default"
+    if text in {"calibration", "full", "no_val_regression"}:
+        return "calibration"
+    return text
+
+
 def evaluate_snapshot(
     snapshot: dict[str, Any],
     *,
     now_epoch: float | None = None,
     train_log_every: int = 1,
+    watchdog_policy: str = "default",
 ) -> dict[str, Any]:
     now_epoch = now_epoch or time.time()
     lines = [str(line) for line in snapshot.get("lines", []) if str(line).strip()]
@@ -51,6 +61,7 @@ def evaluate_snapshot(
     last_train_loss: float | None = None
     step_avg_seconds: float | None = None
     val_bpbs: list[float] = []
+    policy = _watchdog_policy(watchdog_policy)
 
     for raw_line in lines:
         lower = raw_line.lower()
@@ -82,7 +93,7 @@ def evaluate_snapshot(
                 if val_bpb is not None:
                     val_bpbs.append(val_bpb)
 
-    if len(val_bpbs) >= 4:
+    if policy != "calibration" and len(val_bpbs) >= 4:
         tail = val_bpbs[-4:]
         if tail[0] < tail[1] < tail[2] < tail[3]:
             return {"triggered": True, "failure_reason": "regressing_val_bpb"}
@@ -104,6 +115,7 @@ def evaluate_snapshot(
         "latest_step": last_train_step,
         "latest_train_loss": last_train_loss,
         "last_log_update_epoch": mtime_epoch,
+        "watchdog_policy": policy,
     }
 
 
@@ -114,9 +126,15 @@ def check_watchdog(manifest: dict[str, Any]) -> dict[str, Any]:
         train_log_every = int(resolved_env.get("TRAIN_LOG_EVERY", 200))
     except (TypeError, ValueError):
         train_log_every = 200
-    outcome = evaluate_snapshot(snapshot, train_log_every=train_log_every)
+    watchdog_policy = _watchdog_policy(resolved_env.get("WATCHDOG_POLICY"))
+    outcome = evaluate_snapshot(
+        snapshot,
+        train_log_every=train_log_every,
+        watchdog_policy=watchdog_policy,
+    )
     manifest["last_log_line"] = snapshot.get("last_line")
     manifest["last_log_update_epoch"] = outcome.get("last_log_update_epoch") or snapshot.get("mtime_epoch")
+    manifest["watchdog_policy"] = watchdog_policy
     manifest["estimated_cost"] = manifest.get("estimated_cost")
     if outcome.get("triggered"):
         reason = str(outcome["failure_reason"])

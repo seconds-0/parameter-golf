@@ -1,0 +1,19 @@
+extends: baseline.yaml
+name: phase3_cal04_e32_e28_full
+description: "Full 8xH100 decomposition rung with WSD + asymmetric (20,30)"
+hypothesis_id: "CAL-04"
+group: "full-decomposition"
+notes: "Second full decomposition rung after CAL-01: WSD plus the promoted asymmetric softcap (20,30), but without E30. Uses calibration watchdog policy."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "600"
+  TRAIN_LOG_EVERY: "50"
+  VAL_LOSS_EVERY: "200"
+  WATCHDOG_POLICY: "calibration"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  LOGIT_SOFTCAP_POS: "20"
+  LOGIT_SOFTCAP_NEG: "30"
