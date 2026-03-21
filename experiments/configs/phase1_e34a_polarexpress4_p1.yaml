@@ -1,0 +1,22 @@
+extends: baseline.yaml
+name: phase1_e34a_polarexpress4_p1
+description: "P1 Polar Express candidate with 4 Muon steps on the promoted WSD + asymmetric (20,30) + E30 base (eager fallback)"
+hypothesis_id: "E34a-4"
+group: "track-c-muon"
+notes: "Polar Express drop-in replacing Newton-Schulz with 4 Muon orthogonalization steps on the promoted WSD + asymmetric (20,30) + E30 base using TORCHDYNAMO_DISABLE=1 due a fresh-host compile regression."
+env:
+  SEED: "1337"
+  MAX_WALLCLOCK_SECONDS: "300"
+  VAL_LOSS_EVERY: "0"
+  TRAIN_LOG_EVERY: "25"
+  WARMUP_STEPS: "1"
+  LR_SCHEDULE: "wsd"
+  WSD_WARMUP_FRAC: "0.01"
+  WSD_STABLE_FRAC: "0.75"
+  WSD_DECAY_STYLE: "cosine"
+  LOGIT_SOFTCAP_POS: "20"
+  LOGIT_SOFTCAP_NEG: "30"
+  BATCH_SCHEDULE: "0.3:131072,1.0:524288"
+  TORCHDYNAMO_DISABLE: "1"
+  MUON_ORTHO_BACKEND: "polar_express"
+  MUON_BACKEND_STEPS: "4"

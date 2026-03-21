@@ -94,6 +94,7 @@ class Hyperparameters:
     matrix_lr = float(os.environ.get("MATRIX_LR", 0.04))
     scalar_lr = float(os.environ.get("SCALAR_LR", 0.04))
     muon_momentum = float(os.environ.get("MUON_MOMENTUM", 0.95))
+    muon_ortho_backend = os.environ.get("MUON_ORTHO_BACKEND", "newtonschulz5")
     muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 5))
     muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.85))
     muon_momentum_warmup_steps = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 500))
@@ -115,6 +116,19 @@ class Hyperparameters:
 # As borrowed from modded-nanogpt
 # Background on Muon: https://kellerjordan.github.io/posts/muon/
 
+POLAR_EXPRESS_COEFFS: tuple[tuple[float, float, float], ...] = (
+    (8.237312490495558, -23.157747414558205, 16.68056841144592),
+    (4.082441999064834, -2.893047735332586, 0.5252849256975647),
+    (3.926347992254655, -2.85474680347653, 0.531802242289499),
+    (3.2982187133085143, -2.424541981026706, 0.48632008358844075),
+    (2.297036943455258, -1.6366255812590327, 0.4002628455953635),
+    (1.8763805351440446, -1.234789657772233, 0.3589188750166889),
+    (1.8564423485588517, -1.2132449880877845, 0.35680034877976435),
+    (1.8564369760985797, -1.2132402974529466, 0.3568009133792987),
+    (1.8564311671856515, -1.2132289085779973, 0.35679533116132595),
+    (1.8749954775667725, -1.2499909551553612, 0.37499547758858837),
+)
+
 def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
     # Orthogonalize a 2D update matrix with a fast Newton-Schulz iteration.
     # Muon uses this to normalize matrix-shaped gradients before applying them.
@@ -131,11 +145,36 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -
     return X.T if transposed else X
 
 
+def zeropower_via_polarexpress(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
+    # Drop-in Muon orthogonalization backend from the official PolarExpress release.
+    X = G.bfloat16()
+    transposed = G.size(0) > G.size(1)
+    if transposed:
+        X = X.T
+    X /= X.norm() * 1.01 + eps
+    coeffs = POLAR_EXPRESS_COEFFS[:steps]
+    if len(coeffs) < steps:
+        coeffs = coeffs + (POLAR_EXPRESS_COEFFS[-1],) * (steps - len(coeffs))
+    for a, b, c in coeffs:
+        A = X @ X.T
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+    return X.T if transposed else X
+
+
+def muon_orthogonalize(G: Tensor, backend: str, steps: int) -> Tensor:
+    if backend == "newtonschulz5":
+        return zeropower_via_newtonschulz5(G, steps=steps)
+    if backend == "polar_express":
+        return zeropower_via_polarexpress(G, steps=steps)
+    raise ValueError(f"unknown Muon orthogonalization backend: {backend}")
+
+
 class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr: float, momentum: float, backend_steps: int, nesterov: bool = True):
+    def __init__(self, params, lr: float, momentum: float, backend: str, backend_steps: int, nesterov: bool = True):
         super().__init__(
             params,
-            dict(lr=lr, momentum=momentum, backend_steps=backend_steps, nesterov=nesterov),
+            dict(lr=lr, momentum=momentum, backend=backend, backend_steps=backend_steps, nesterov=nesterov),
         )
 
     @torch.no_grad()
@@ -155,6 +194,7 @@ class Muon(torch.optim.Optimizer):
                 continue
             lr = group["lr"]
             momentum = group["momentum"]
+            backend = group["backend"]
             backend_steps = group["backend_steps"]
             nesterov = group["nesterov"]
 
@@ -172,7 +212,7 @@ class Muon(torch.optim.Optimizer):
                     buf.mul_(momentum).add_(g)
                     if nesterov:
                         g = g.add(buf, alpha=momentum)
-                    g = zeropower_via_newtonschulz5(g, steps=backend_steps)
+                    g = muon_orthogonalize(g, backend=backend, steps=backend_steps)
                     # Scale correction from Muon reference implementations.
                     g *= max(1, g.size(0) / g.size(1)) ** 0.5
                     updates_flat[curr : curr + p.numel()] = g.reshape(-1)
@@ -957,12 +997,17 @@ def compute_aux_losses(model: nn.Module, args: Hyperparameters) -> Tensor:
 # -----------------------------
 
 def main() -> None:
-    global zeropower_via_newtonschulz5
+    global zeropower_via_newtonschulz5, zeropower_via_polarexpress
 
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
     hyperparams_fingerprint(args, "train_hparams")
-    zeropower_via_newtonschulz5 = torch.compile(zeropower_via_newtonschulz5)
+    if args.muon_ortho_backend == "newtonschulz5":
+        zeropower_via_newtonschulz5 = torch.compile(zeropower_via_newtonschulz5)
+    elif args.muon_ortho_backend == "polar_express":
+        zeropower_via_polarexpress = torch.compile(zeropower_via_polarexpress)
+    else:
+        raise ValueError(f"unknown MUON_ORTHO_BACKEND={args.muon_ortho_backend!r}")
 
     # -----------------------------
     # DISTRIBUTED + CUDA SETUP
@@ -1111,6 +1156,7 @@ def main() -> None:
         matrix_params,
         lr=args.matrix_lr,
         momentum=args.muon_momentum,
+        backend=args.muon_ortho_backend,
         backend_steps=args.muon_backend_steps,
     )
     for group in optimizer_muon.param_groups:

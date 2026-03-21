@@ -59,7 +59,7 @@
 | [ ] | E12 | Embedding norm penalty: A=L2 λ=0.01, B=max-norm clip to 95th pct | P1→P2 | C | E09 |
 | [ ] | E29 | Value embed gate: per-block scalar ve_gate_w (init=0), V += gate*tok_emb[:kv_dim] | P1 | E | E02 |
 | [x] | E30 | Batch schedule: 131K tokens first 30% of steps, then 524K for remaining 70% | P1 | C | E02 |
-| [ ] | E34a | Polar Express drop-in (optimal polynomial NS replacement, ~50 lines) | P1 | C | E02 |
+| [x] | E34a | Polar Express drop-in (optimal polynomial NS replacement, ~50 lines) | P1 | C | E02 |
 | [ ] | E34b | Turbo-Muon AOL preconditioning (if E34a insufficient, ~200 lines) | P1 | C | E34a |
 | [ ] | E34c | NorMuon neuron-wise adaptive LR (~150 lines) | P1 | C | E02 |
 
@@ -117,7 +117,17 @@
 
 - Conservative plan: ~12-15 H100-hours total
 - Phase caps: P0 10%, P1 25%, P2 35%, P3 20%, P4 10% reserved
-- Current spend: ~$10.83
+- Current spend: ~$10.89
+
+## Full-Run Calibration Policy
+
+- Default provider split: use `Vast` for cheap `1xH100` proxy work and `Runpod` for planned `8xH100` calibration or submission-class full runs.
+- On `Runpod`, prefer the spot-priced `8xH100` secure-cloud band for short calibration or exploratory full runs; fall back to on-demand only when interruption risk or availability starts costing more time than it saves.
+- Treat full runs as calibration tools, not ceremonial endgame events. Once the harness is trusted, cash out meaningful proxy gains instead of waiting for a perfect stack.
+- The live proxy reference is the exact stack most recently tested on a real full run.
+- Trigger a new full-run recalibration whenever the active promoted proxy stack improves post-roundtrip `val_bpb` by at least `0.010` versus that live proxy reference.
+- Allow an immediate full-run retest after any single unusually strong proxy win of `0.020` `val_bpb` or better, even if the cumulative cadence threshold has not yet been reached.
+- After every full run, reset the proxy reference to the stack and proxy score used for that retest.
 
 ## Ideas to Explore (not yet precise enough for a kill-rule experiment)
 
@@ -134,9 +144,18 @@
 - `E35` is now complete and killed on top of the promoted WSD base. The matched same-host P1 control `phase1_e35_wsd_control_p1-20260320-183746-f3f18702` landed at postquant `1.44615320`, prequant `1.44512983`, `qgap=0.00102337`, and `639.8 ms/step`. The cooldown-β₂ candidate `phase1_e35_wsd_beta2_p1-20260320-184735-878125dc` regressed to postquant `1.45758252`, prequant `1.45651059`, and `qgap=0.00107193`, for `Δpq=+0.01142932`, `Δpre=+0.01138076`, and a slight artifact regression (`12,756,384` → `12,797,094` bytes) while only modestly improving step time (`639.8 ms` → `630.1 ms`). This cleanly fails the Track C kill rule, so the active base recipe remains plain WSD without cooldown β₂ changes.
 - `E28` is now complete and promoted on top of the WSD base. The matched same-host P1 control `phase1_e28_control_p1-20260320-192913-2c4b106b` landed at postquant `1.42336352`, prequant `1.42226318`, `qgap=0.00110033`, and `511.9 ms/step`. The positive-heavy asymmetric variants both failed cleanly: `phase1_e28_asym3020_p1-20260320-193915-14cc98ae` regressed to `1.43924815` (`Δpq=+0.01588463`, `572.5 ms/step`) and `phase1_e28_asym3015_p1-20260320-195120-d28513d6` regressed further to `1.44641556` (`Δpq=+0.02305204`, `613.1 ms/step`). But the negative-favored variant `phase1_e28_asym2030_p1-20260320-202425-1db0062b` improved to postquant `1.40769697`, prequant `1.40659045`, and `qgap=0.00110652`, for `Δpq=-0.01566655` at essentially unchanged step time (`512.6 ms`, `+0.14%`). This is a clear P1 promotion and makes WSD + asymmetric `(20,30)` the active Track C base.
 - `E30` is now complete and promoted, with one important caveat: the paired same-host P1 bundle had to use `TORCHDYNAMO_DISABLE=1` because fresh-host `torch.compile` is currently crashing on Vast during warmup. Under that matched eager fallback, control `phase1_e30_control_p1-20260320-211549-b83629b3` landed at postquant `1.46588267`, prequant `1.46468347`, `qgap=0.00119921`, `393` steps, and `765.26 ms/step`. The batch-schedule candidate `phase1_e30_batch_schedule_p1-20260320-212550-76454fcd` improved to postquant `1.41664772`, prequant `1.41525336`, and `qgap=0.00139435`, for `Δpq=-0.04923495` and `Δpre=-0.04943011`, while reaching `1194` steps within the same wallclock. This is a decisive recipe win and makes WSD + asymmetric `(20,30)` + `E30` batch schedule the new active Track C base, but future cheap P1 follow-ups should either use the same matched eager fallback or fix the fresh-host compile regression first.
-- Post-mortem coverage now exists for every completed non-baseline experiment in the live tracker through `E30`: `E03`, `E04`, `E23`, `E27`, `E28`, `E30`, `E32`, and `E35` all have closeout reviews in [docs/postmortems/](./postmortems/README.md), and none currently need reopening.
+- `E34a` is now complete and effectively neutral. On the promoted WSD + asymmetric `(20,30)` + `E30` base, control `phase1_e34a_control_p1-20260320-222847-48fb49f2` landed at postquant `1.40742446` with `235.3 ms/step`, `PolarExpress-5` `phase1_e34a_polarexpress5_p1-20260320-235254-26475b9f` landed at `1.40728640` with `234.7 ms/step`, and `PolarExpress-4` `phase1_e34a_polarexpress4_p1-20260321-000155-7b391557` landed at `1.40755582` with `232.2 ms/step`. That is far too small to promote on quality, but it also does not kill the optimizer lane.
+- Post-mortem coverage now exists for every completed non-baseline experiment in the live tracker through `E34a`: `E03`, `E04`, `E23`, `E27`, `E28`, `E30`, `E32`, `E34a`, and `E35` all have closeout reviews in [docs/postmortems/](./postmortems/README.md), and none currently need reopening.
 - Static exporter-only tuning is therefore exhausted for this checkpoint. If we stay in Track B, the next concrete branch is `E24a` fixed L2 weight decay for export retention, followed later by `E24b`, `E33`, or `E13` one at a time.
-- The best overall next cheap tranche is now `E34a` Polar Express on top of the promoted WSD + asymmetric `(20,30)` + `E30` base. If we choose to push Track B next instead, `E24a` is the right branch. If we stay on fresh Vast hosts before fixing the compile regression, matched P1 follow-ups should continue using the same eager fallback to avoid mixing measurement regimes.
+- The best overall next cheap tranche is now `E34c` NorMuon on top of the promoted WSD + asymmetric `(20,30)` + `E30` base. The working hypothesis is still the same: our biggest wins so far have come from improving training efficiency or optimizer quality rather than exporter-only tuning, and current `qgap` is already small enough that prequant quality is the higher-ceiling axis.
+- Because `E34a` came back interestingly neutral rather than decisively negative, `E34c` is the strongest follow-up branch rather than an immediate jump to architecture. It lives on the same optimizer-improvement thesis as `E34a`, but uses a different mechanism and should compose cleanly if both survive.
+- If `E34c` is flat or if we intentionally want to diversify away from the Muon lane after it, `E24a` fixed L2 weight decay is the next best low-investment branch. Even though Track B's direct exporter knobs are exhausted, weight decay can still help via generalization and weight-scale control, not only through `qgap`.
+- `E16` KV-head rebudget and `E25` SwiGLU remain good medium-priority branches, but they are not the default next move after `E34a`. They are structurally more invasive and depend more on follow-on composition (`E17` for `E16`, param-budget tradeoffs for `E25`) than the cheaper optimizer/regularization branches above.
+- `E31a` MTP and `E18` layer sharing remain later, higher-variance branches. Right now the evidence says "more effective steps" is winning harder than "richer but heavier steps," so we should not front-load overhead-heavy ideas until the cheaper optimizer and regularization paths are exhausted or we have a fuller calibration run.
+- If we stay on fresh Vast hosts before fixing the compile regression, matched P1 follow-ups should continue using the same eager fallback to avoid mixing measurement regimes.
+- The provider split is now deliberate: `Vast` remains the default lane for `1xH100` proxy work, while `Runpod` is the preferred lane for the first serious `8xH100` calibration and later full-run attempts.
+- For those `Runpod` full runs, the default purchasing posture is now "spot first, on-demand if needed." These runs are short enough that lower-priced secure-cloud capacity is the right default unless interruptions become a real drag on momentum.
+- Full-run cash-out cadence is now explicit: once a stack has been measured on a real full run, run another full recalibration after the next `0.010` post-roundtrip proxy improvement versus that reference stack, or immediately after any single `0.020` proxy leap.
 - Tokenizer work is still blocked on `X-06` then `E05`, and tokenizer-dependent recipe stars `E10`-`E12` remain blocked on `E09`.
 
 ## Recent Learnings
