@@ -67,6 +67,7 @@ E34C_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34c_control
 E34C_NORMUON_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e34c_normuon_p1.yaml"
 E24A_CONTROL_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e24a_control_p1.yaml"
 E24A_WD01_P1_CONFIG = ROOT / "experiments" / "configs" / "phase1_e24a_wd01_p1.yaml"
+CALIBRATION_FULL_CONFIG = ROOT / "experiments" / "configs" / "phase3_calibration_wsd_e28_e30.yaml"
 SWEEP_CONFIG = ROOT / "experiments" / "configs" / "sweep_lr.yaml"
 BASELINE_LOG = ROOT / "records" / "track_10min_16mb" / "2026-03-17_NaiveBaseline" / "train.log"
 
@@ -359,6 +360,19 @@ def test_validate_e24a_wd01_config() -> None:
     run = result.runs[0]
     assert run.env["FIXED_WEIGHT_DECAY"] == "0.1"
     assert run.metadata["hypothesis_id"] == "E24a-0.1"
+
+
+def test_validate_full_calibration_config() -> None:
+    result = config_utils.validate_config(CALIBRATION_FULL_CONFIG)
+    assert result.ok
+    run = result.runs[0]
+    assert run.label == "phase3_calibration_wsd_e28_e30"
+    assert run.metadata["hypothesis_id"] == "CAL-01"
+    assert run.env["LR_SCHEDULE"] == "wsd"
+    assert run.env["LOGIT_SOFTCAP_POS"] == "20"
+    assert run.env["LOGIT_SOFTCAP_NEG"] == "30"
+    assert run.env["BATCH_SCHEDULE"] == "0.3:131072,1.0:524288"
+    assert run.env["MAX_WALLCLOCK_SECONDS"] == "600"
 
 
 def test_export_eval_parses_env_overrides() -> None:
