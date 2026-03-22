@@ -1693,6 +1693,7 @@ def test_ensure_remote_data_uses_flock(monkeypatch: pytest.MonkeyPatch) -> None:
     launch_runtime.ensure_remote_data(manifest)
     assert commands[0].startswith("test -f ")
     assert "flock -x /tmp/pgolf_data.lock" in commands[1]
+    assert "bash -lc" in commands[1]
     assert config_utils.remote_python_command("/shared", "data/cached_challenge_fineweb.py --variant sp1024") in commands[1]
 
 
@@ -1719,6 +1720,7 @@ def test_ensure_remote_data_forwards_hf_auth_for_bootstrap_only(monkeypatch: pyt
 
     launch_runtime.ensure_remote_data(manifest)
 
+    assert "bash -lc" in commands[1]
     assert "export HF_TOKEN=hf_secret_token" in commands[1]
     assert "export HUGGINGFACE_HUB_TOKEN=hf_secret_token" in commands[1]
     assert config_utils.remote_python_command("/shared", "data/cached_challenge_fineweb.py --variant sp1024") in commands[1]

@@ -264,17 +264,14 @@ def ensure_remote_data(manifest: dict[str, Any]) -> None:
         )
     shared = str(manifest["machine_remote_dir"])
     bootstrap_exports = dataset_bootstrap_env_exports()
-    bootstrap_prefix = " ".join(bootstrap_exports)
     bootstrap_body = remote_python_command(shared, f"data/cached_challenge_fineweb.py --variant {q(variant)}")
-    if bootstrap_prefix:
-        bootstrap_cmd = f"{bootstrap_prefix} && {bootstrap_body}"
-    else:
-        bootstrap_cmd = bootstrap_body
+    bootstrap_parts = [*bootstrap_exports, bootstrap_body]
+    bootstrap_cmd = " && ".join(bootstrap_parts)
     ssh(
         manifest["host"],
         " ".join(
             [
-                f"(cd {q(shared)} && flock -x /tmp/pgolf_data.lock {bootstrap_cmd})",
+                f"(cd {q(shared)} && flock -x /tmp/pgolf_data.lock bash -lc {q(bootstrap_cmd)})",
             ]
         ),
     )
