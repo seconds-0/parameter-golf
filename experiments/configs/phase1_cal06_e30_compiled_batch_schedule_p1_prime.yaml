@@ -9,6 +9,7 @@ env:
   MAX_WALLCLOCK_SECONDS: "300"
   VAL_LOSS_EVERY: "0"
   TRAIN_LOG_EVERY: "25"
+  DATASET_VARIANT: "sp1024"
   TMPDIR: "/workspace/pgolf-tmp"
   TORCHINDUCTOR_CACHE_DIR: "/workspace/torchinductor-cache"
   TRITON_CACHE_DIR: "/workspace/triton-cache"
