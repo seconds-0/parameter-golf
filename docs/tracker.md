@@ -157,21 +157,23 @@
 - `CAL-01`, the first real `8xH100` Runpod calibration on the promoted proxy stack, failed directionally. The run `phase3_calibration_wsd_e28_e30-20260321-024914-5924c918` was watchdog-killed at about `580.8s` after a strictly worsening four-point validation tail, so it never reached final exact/export eval.
 - The sharpest updated diagnosis is more specific than "the stack was just bad." On an equal-tokens basis, the candidate was competitive through roughly `900M` tokens: around `200M` tokens it was better than baseline by about `-0.0827` bpb, around `500M` it was still slightly better (`-0.0037`), and around `900M` it was effectively tied (`+0.0045`). It only clearly fell apart later, reaching about `+0.0659` by `~2.0B` tokens.
 - That means the current promoted proxy stack (`E32` + `E28(20,30)` + `E30`) is **not** yet a trusted full candidate, and our proxy lane is over-optimistic in a specific way: it let a staged schedule promote without really validating the later stage that mattered in the full run.
-- The sharpest reviewed diagnosis is therefore that `E30` is the leading suspect in two ways:
-  - it was promoted under an eager fallback regime and then composed into a compiled full run
-  - its batch transition lines up almost exactly with the full-run curve inflection near step `6200`, while WSD is still in the stable max-LR phase
+- The sharpest reviewed diagnosis is therefore that `E30` remains the leading suspect, but in a narrower way than before:
+  - the cheap compiled check shows the win is not just an eager-fallback artifact
+  - the phase-aware proxy shows the later batch-schedule stage is not inherently bad in isolation
+  - the remaining likely failure surface is the full-scale interaction between `E30`, `E32`, and the `8xH100` regime, especially the timing of the large-batch transition under WSD
 - `CAL-02`, the same-provider compiled Runpod baseline control `phase3_cal02_runpod_baseline_control-20260321-120456-1b219838`, then succeeded and validates the full-run lane itself. It landed at prequant `1.22760001` and postquant `1.23379495`, versus the trusted historical baseline `1.22628807`. The prequant delta (`+0.00131194`) is close enough to treat Runpod full training as reproduced, which makes the negative read on `CAL-01` much stronger.
 - `CAL-02` also sharpens the decomposition rule. For risky classes like staged schedules and throughput-changing ideas, we now require both:
   - an individual confirmation
   - a layered confirmation on the active base
+- `CAL-06`, the matched compiled `1xH100` Runpod control/candidate check for `E30`, is now complete and strongly positive. Control `phase1_cal06_e30_compiled_control_p1_prime-20260322-162009-969ba44f` landed at prequant `1.69517445`, postquant `1.69715848`, and reloaded postquant `1.69739495`, while the compiled batch-schedule candidate `phase1_cal06_e30_compiled_batch_schedule_p1_prime-20260322-163622-69fbef8d` improved to prequant `1.35620484`, postquant `1.35948058`, and reloaded postquant `1.35974881`. That is about `-0.33765` bpb on reloaded post-roundtrip, so the compile/eager mismatch is no longer the primary explanation for `CAL-01`.
+- `CAL-07`, the phase-aware `E30` proxy, is now also complete and strongly positive after explicitly crossing the later schedule stage. Control `phase2_cal07_e30_phaseaware_control_p2-20260323-022447-3d42dda8` landed at prequant `1.41549442`, postquant `1.41658131`, and reloaded postquant `1.41658423`, while the candidate `phase2_cal07_e30_phaseaware_batch_schedule_p2-20260323-024450-2311dc9a` improved to prequant `1.37553203`, postquant `1.37740077`, and reloaded postquant `1.37739751`. That is about `-0.03919` bpb on reloaded post-roundtrip even after the phase boundary, so "the original proxy only won because it never reached phase 2" is also no longer the leading explanation for `CAL-01`.
 - `E34c` still matters as evidence: NorMuon improved both prequant and post-roundtrip quality slightly, so the optimizer lane is not dead. But after `CAL-01`, the next best use of budget is no longer another cheap proxy branch by default.
-- The next tranche should be a proxy-calibration repair plus full-run decomposition tranche on Runpod:
-  - same-provider compiled baseline control
-  - soften or disable the regression-tail watchdog for full calibrations so we always get final exact/export metrics
-  - `E32` alone on full
+- The next tranche should now be a pure full-run decomposition tranche on Runpod:
+  - same-provider compiled baseline control and full-run-safe watchdog policy are already in place
+  - `CAL-06` compiled `1xH100` is complete
+  - `CAL-07` phase-aware `E30` is complete
+  - next: `E32` alone on full
   - then `E32 + E28` on full
-  - then a phase-aware `E30` proxy that explicitly crosses the later schedule stage
-  - then a compiled `1xH100` Runpod `E30` datapoint to resolve the compile/eager confound
   - then targeted `E30` ablations and transition-timing checks
 - The process lesson is now explicit: staged ideas cannot be promoted from short proxies that never enter the later phase. The new proxy policy is documented in [docs/postmortems/proxy_calibration_meta.md](./postmortems/proxy_calibration_meta.md).
 - The stronger process lesson is now also explicit: risky regime-changing ideas should be tested individually first and then re-tested in composition. `CAL-01` was the concrete failure mode that made this rule necessary.
@@ -199,4 +201,5 @@
 - `E28` gave a more nuanced answer than “asymmetry good” or “asymmetry bad.” Making positive logits harder to saturate was harmful on this proxy, but making negative logits softer while tightening positive logits (`cap_pos=20`, `cap_neg=30`) produced a strong same-host P1 win with essentially no runtime cost. The right lesson is to keep the specific `(20,30)` winner, not the whole family.
 - `E30` shows that early small batches are worth a lot in this regime. Even under the matched eager fallback, the schedule `131072` tokens for the first `30%` of steps then `524288` afterward improved post-roundtrip quality by about `-0.049` bpb versus the same-host control because it fit roughly `3x` as many optimizer updates into the same wallclock.
 - Fresh-host `torch.compile` on Vast is currently unstable on the current environment: both the live trainer and older trusted trainer snapshots crash during compiled warmup on fresh hosts, while the same codepaths run correctly under `TORCHDYNAMO_DISABLE=1`. That blocker does not invalidate the eager `E30` result, but it does mean future P1 comparisons should stay in one regime until the compile issue is resolved.
+- `CAL-06` sharpened that lesson further: compiled `1xH100` does **not** kill `E30`. The batch-schedule candidate stayed massively positive on a matched compiled cheap bundle, so the more plausible remaining failure is the later full-scale phase boundary under WSD rather than "the win only existed because the proxy was eager."
 - `E34c` also paid for its own bughunt: the first NorMuon attempt failed immediately because the adaptive second-momentum buffer was being tracked in bf16 and then updated via `lerp_` against fp32 second moments. Keeping that buffer in fp32 fixed the implementation bug and the rerun produced a valid, slightly-better result. The branch is therefore "real but below threshold," not "unknown because implementation was broken."

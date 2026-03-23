@@ -2,7 +2,7 @@
 
 ## Why this exists
 
-`CAL-01` exposed a process problem, not just a bad composed stack. The proxy lane was directionally useful, but it let a staged schedule idea (`E30`) promote without ever exercising the later stage that mattered in the real run.
+`CAL-01` exposed a process problem, not just a bad composed stack. The proxy lane was directionally useful, but it let a staged schedule idea (`E30`) promote without ever exercising the later stage that mattered in the real run. `CAL-07` then sharpened the diagnosis again: phase-aware coverage matters, but the later stage by itself was not the failing ingredient.
 
 This review captures the stronger rule set we want going forward so the proxy system stays honest.
 
@@ -106,12 +106,14 @@ For full runs we now require:
 
 And the launcher should record that dataset snapshot in the run manifest so mismatches are visible later without log archaeology.
 
-## Current best hypothesis after CAL-01
+## Current best hypothesis after CAL-07
 
-- `E30` phase 1 is probably genuinely useful
-- `E30` phase 2 under the current WSD timing is the likely failure surface
-- the proxy lane over-promoted the full schedule because it never validated the later phase
-- compile/eager mismatch still matters, but it is not the only plausible explanation anymore
+- `E30` phase 1 is genuinely useful
+- `CAL-06` shows `E30` also stays strongly positive on a compiled cheap `1xH100` path
+- `CAL-07` shows `E30` stays strongly positive even after crossing the later batch-schedule stage in a phase-aware proxy
+- the proxy lane did over-promote the full schedule originally, but not because phase 2 is inherently bad in isolation
+- the leading remaining failure surface is the full-scale interaction between `E30`, `E32`, and the `8xH100` regime, especially the timing of the large-batch transition under WSD
+- compile/eager mismatch still matters as a regime difference, but it is no longer the leading explanation for `CAL-01`
 
 ## What changes now
 
@@ -119,8 +121,15 @@ The next tranche should follow this order:
 
 1. same-provider Runpod baseline control
 2. full-run-safe watchdog policy
-3. phase-aware `E30` proxy that crosses the transition
-4. compiled `1xH100` Runpod E30 check
+3. compiled `1xH100` Runpod E30 check
+4. phase-aware `E30` proxy that crosses the transition
 5. full decomposition with standalone-then-layered structure (`E32`, then `E32 + E28`, then `E30` variants)
 
-If those phase-aware and compiled checks still do not calibrate the proxy lane, we should accept that this repo needs more real `8xH100` runs for promotion decisions than we originally hoped.
+`CAL-06` and `CAL-07` are now both complete and materially informative:
+
+- `CAL-06`: the compiled `E30` candidate beat the compiled control by about `-0.338` bpb post-roundtrip on a matched `1xH100` bundle
+- `CAL-07`: the phase-aware `E30` candidate beat the matched control by about `-0.0392` bpb post-roundtrip even after crossing the later stage
+
+That means the next paid work should no longer be another cheap `E30` confound check. It should be full decomposition.
+
+If the remaining phase-aware and full-decomposition checks still do not calibrate the proxy lane, we should accept that this repo needs more real `8xH100` runs for promotion decisions than we originally hoped.

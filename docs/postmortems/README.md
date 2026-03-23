@@ -32,10 +32,13 @@ Each post-mortem answers the same questions:
 | [E34c](./e34c_normuon.md) | Neutral / no promote | Medium | NorMuon improved both prequant and post-roundtrip quality slightly, but only by about `-0.0012` bpb and with a small runtime cost, so it stayed below the promote bar | Reopen if a later stack amplifies optimizer-quality gains or if another Muon result suggests NorMuon composes better there |
 | [E35](./e35_cooldown_beta2.md) | Killed | High | On top of WSD, cooldown `β₂` made both prequant and post-roundtrip quality worse | Reopen only with a meaningfully different cooldown policy or schedule family |
 | [CAL-01](./cal01_full_run_calibration.md) | Failed calibration | High | The first real `8xH100` calibration stack held up through phase 1 on an equal-tokens basis, then failed after entering the unvalidated second stage of `E30`, and was watchdog-killed before export | Reopen only after same-provider baseline control, a phase-aware proxy for staged schedules, and a full-run-safe watchdog policy |
+| [CAL-06](./cal06_e30_compiled_check.md) | Positive cheap compiled check | High | `E30` stayed massively positive on a matched compiled `1xH100` bundle, so the compile/eager mismatch is not the primary explanation for `CAL-01` | Reopen only if the cheap compiled runtime changes materially or later full decomposition directly contradicts it |
+| [CAL-07](./cal07_phase_aware_e30.md) | Positive phase-aware proxy | High | `E30` stayed strongly positive even after crossing the later batch-schedule stage, so "phase 2 exists" is not the leading explanation for `CAL-01` | Reopen only if a later full decomposition directly contradicts it |
 
 ## Process Reviews
 
 - [Proxy Calibration Meta](./proxy_calibration_meta.md) — how staged proxies should be validated, when compile/eager mismatches block promotion, and when the right answer is to spend more on real full runs sooner.
+- [CAL-07](./cal07_phase_aware_e30.md) — why the original short `E30` win was not just a phase-1-only illusion.
 
 ## Process Checklist
 
@@ -61,3 +64,5 @@ The current archive covers every completed non-baseline experiment in the live t
 - `E34c`
 - `E35`
 - `CAL-01`
+- `CAL-06`
+- `CAL-06`
